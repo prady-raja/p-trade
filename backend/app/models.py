@@ -68,3 +68,21 @@ class TradeRecord(BaseModel):
     target_2: Optional[str] = None
     note: Optional[str] = None
     status: str = 'open'
+
+
+class KiteLoginUrlResponse(BaseModel):
+    configured: bool
+    connected: bool
+    login_url: Optional[str] = None
+    message: str
+
+
+class KiteStatusResponse(BaseModel):
+    configured: bool
+    connected: bool
+    user_id: Optional[str] = None
+    user_name: Optional[str] = None
+    login_time: Optional[str] = None
+    api_key_present: bool
+    redirect_url_present: bool
+    last_error: Optional[str] = None

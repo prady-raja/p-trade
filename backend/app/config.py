@@ -11,7 +11,11 @@ class Settings(BaseSettings):
 
     kite_api_key: Optional[str] = None
     kite_api_secret: Optional[str] = None
+    kite_redirect_url: Optional[str] = None
     kite_access_token: Optional[str] = None
+
+    frontend_app_url: Optional[str] = None
+
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
 
