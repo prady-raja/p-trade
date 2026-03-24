@@ -64,7 +64,7 @@ def exchange_request_token(request_token: str) -> Dict[str, Any]:
     auth_state.access_token = access_token
     auth_state.user_id = session.get('user_id')
     auth_state.user_name = session.get('user_name')
-    auth_state.login_time = session.get('login_time')
+    auth_state.login_time = str(session.get('login_time')) if session.get('login_time') else None
     auth_state.last_error = None
 
     return session
