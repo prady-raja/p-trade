@@ -3,6 +3,7 @@ import io
 import random
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from .models import AnalyzeResult, MarketState, TradeRecord, WatchlistItem
@@ -201,6 +202,146 @@ def score_shortlist(provided_watchlist: Optional[List[WatchlistItem]] = None) ->
     scored.sort(key=lambda x: (x.bucket != 'trade_today', x.bucket != 'watch_tomorrow', -x.score))
     store.watchlist = scored
     return scored
+
+
+def calculate_ema(closes: List[float], period: int) -> List[float]:
+    if len(closes) < period:
+        return []
+    k = 2.0 / (period + 1)
+    result = [sum(closes[:period]) / period]
+    for price in closes[period:]:
+        result.append(price * k + result[-1] * (1.0 - k))
+    return result
+
+
+def calculate_rsi(closes: List[float], period: int = 14) -> Optional[float]:
+    if len(closes) < period + 1:
+        return None
+    deltas = [closes[i + 1] - closes[i] for i in range(len(closes) - 1)]
+    recent = deltas[-period:]
+    avg_gain = sum(max(d, 0.0) for d in recent) / period
+    avg_loss = sum(abs(min(d, 0.0)) for d in recent) / period
+    if avg_loss == 0.0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def calculate_volume_ratio(volumes: List[int], period: int = 20) -> Optional[float]:
+    if len(volumes) < period + 1:
+        return None
+    avg = sum(volumes[-period - 1:-1]) / period
+    if avg == 0:
+        return None
+    return volumes[-1] / avg
+
+
+def calculate_rs_vs_nifty(
+    ticker_closes: List[float],
+    nifty_closes: List[float],
+    period: int = 60,
+) -> Optional[float]:
+    if len(ticker_closes) < period or len(nifty_closes) < period:
+        return None
+    ticker_perf = (ticker_closes[-1] - ticker_closes[-period]) / ticker_closes[-period]
+    nifty_perf = (nifty_closes[-1] - nifty_closes[-period]) / nifty_closes[-period]
+    return ticker_perf - nifty_perf
+
+
+def analyze_ticker_with_kite(ticker: str, date: Optional[str] = None) -> 'AnalyzeResult':
+    from .kite_client import (
+        ensure_connected,
+        resolve_instrument_token,
+        get_historical_candles,
+        get_nifty_instrument_token,
+    )
+
+    ensure_connected()
+
+    normalized = ticker.upper().strip()
+    to_date = datetime.strptime(date, '%Y-%m-%d') if date else datetime.today()
+    from_date = to_date - timedelta(days=400)  # buffer for 200-day EMA
+
+    instrument_token = resolve_instrument_token(normalized)
+    candles = get_historical_candles(instrument_token, from_date, to_date, 'day')
+
+    if len(candles) < 200:
+        raise ValueError(
+            f'Insufficient data for {normalized}: {len(candles)} candles returned, need at least 200.'
+        )
+
+    closes: List[float] = [float(c['close']) for c in candles]
+    volumes: List[int] = [int(c['volume']) for c in candles]
+
+    ema20 = calculate_ema(closes, 20)
+    ema50 = calculate_ema(closes, 50)
+    ema200 = calculate_ema(closes, 200)
+
+    latest_price = closes[-1]
+    latest_ema20 = ema20[-1]
+    latest_ema50 = ema50[-1]
+    latest_ema200 = ema200[-1]
+
+    score = 0
+    checks: List[str] = []
+
+    if latest_price > latest_ema20:
+        score += 1
+        checks.append('Price > 20 EMA')
+
+    if latest_ema20 > latest_ema50:
+        score += 1
+        checks.append('20 EMA > 50 EMA')
+
+    if latest_ema50 > latest_ema200:
+        score += 1
+        checks.append('50 EMA > 200 EMA')
+
+    rsi = calculate_rsi(closes)
+    if rsi is not None and rsi > 50.0:
+        score += 1
+        checks.append(f'RSI {rsi:.1f} > 50')
+
+    vol_ratio = calculate_volume_ratio(volumes)
+    if vol_ratio is not None and vol_ratio > 1.5:
+        score += 1
+        checks.append(f'Vol {vol_ratio:.1f}x 20-day avg')
+
+    try:
+        nifty_token = get_nifty_instrument_token()
+        nifty_candles = get_historical_candles(nifty_token, from_date, to_date, 'day')
+        nifty_closes: List[float] = [float(c['close']) for c in nifty_candles]
+        rs = calculate_rs_vs_nifty(closes, nifty_closes)
+        if rs is not None and rs > 0.0:
+            score += 1
+            checks.append(f'RS vs Nifty +{rs * 100:.1f}%')
+    except Exception:
+        pass  # skip RS check if Nifty data unavailable
+
+    if score >= 5:
+        verdict = 'STRONG BUY'
+    elif score >= 3:
+        verdict = 'BUY WATCH'
+    elif score >= 1:
+        verdict = 'WAIT'
+    else:
+        verdict = 'REJECT'
+
+    summary = f'{normalized} scored {score}/6. Checks: {", ".join(checks) or "none"}.'
+    trigger = f'Above {latest_ema20:.2f} (20 EMA)' if score >= 3 else None
+    stop = f'Below {latest_ema50:.2f} (50 EMA)'
+
+    return AnalyzeResult(
+        ticker=normalized,
+        verdict=verdict,
+        score=score,
+        trigger=trigger,
+        stop_loss=stop,
+        target_1='Nearest resistance',
+        target_2='Measured move target',
+        risk_reward='1:3.0+' if score >= 3 else None,
+        summary=summary,
+    )
 
 
 def analyze_ticker(ticker: str, date: Optional[str] = None) -> AnalyzeResult:

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from kiteconnect import KiteConnect
 
@@ -94,10 +95,45 @@ def clear_kite_session() -> None:
     auth_state.last_error = None
 
 
-# Phase 2 helpers: keep these stubs now, fill them next.
-def get_instruments(exchange: str = 'NSE') -> Any:
+_instruments_cache: Dict[str, List[Dict[str, Any]]] = {}
+
+
+def get_instruments(exchange: str = 'NSE') -> List[Dict[str, Any]]:
+    ensure_connected()
+    if exchange in _instruments_cache:
+        return _instruments_cache[exchange]
     kite = create_kite_client()
-    return kite.instruments(exchange=exchange)
+    instruments = kite.instruments(exchange=exchange)
+    _instruments_cache[exchange] = instruments
+    return instruments
+
+
+def resolve_instrument_token(tradingsymbol: str, exchange: str = 'NSE') -> int:
+    ensure_connected()
+    sym = tradingsymbol.upper().strip()
+    for inst in get_instruments(exchange):
+        if inst['tradingsymbol'] == sym and inst['exchange'] == exchange:
+            return inst['instrument_token']
+    raise ValueError(f'Instrument not found: {tradingsymbol} on {exchange}')
+
+
+def get_historical_candles(
+    instrument_token: int,
+    from_date: datetime,
+    to_date: datetime,
+    interval: str = 'day',
+) -> List[Dict[str, Any]]:
+    ensure_connected()
+    kite = create_kite_client()
+    return kite.historical_data(instrument_token, from_date, to_date, interval)
+
+
+def get_nifty_instrument_token() -> int:
+    ensure_connected()
+    for inst in get_instruments('NSE'):
+        if inst['tradingsymbol'] == 'NIFTY 50':
+            return inst['instrument_token']
+    raise ValueError('NIFTY 50 instrument not found in NSE instruments list.')
 
 
 def get_profile() -> Dict[str, Any]:
