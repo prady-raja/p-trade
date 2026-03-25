@@ -255,91 +255,220 @@ def analyze_ticker_with_kite(ticker: str, date: Optional[str] = None) -> 'Analyz
         get_historical_candles,
         get_nifty_instrument_token,
     )
+    from .models import TrendContext, StrengthContext, ParticipationContext, WeeklyContext
 
     ensure_connected()
 
     normalized = ticker.upper().strip()
     to_date = datetime.strptime(date, '%Y-%m-%d') if date else datetime.today()
-    from_date = to_date - timedelta(days=400)  # buffer for 200-day EMA
+    from_date = to_date - timedelta(days=400)  # buffer for 200-day EMA + 57 weekly candles
 
     instrument_token = resolve_instrument_token(normalized)
     candles = get_historical_candles(instrument_token, from_date, to_date, 'day')
 
-    if len(candles) < 200:
+    if len(candles) < 50:
         raise ValueError(
-            f'Insufficient data for {normalized}: {len(candles)} candles returned, need at least 200.'
+            f'Insufficient data for {normalized}: {len(candles)} candles, need at least 50.'
         )
 
     closes: List[float] = [float(c['close']) for c in candles]
     volumes: List[int] = [int(c['volume']) for c in candles]
-
-    ema20 = calculate_ema(closes, 20)
-    ema50 = calculate_ema(closes, 50)
-    ema200 = calculate_ema(closes, 200)
-
     latest_price = closes[-1]
-    latest_ema20 = ema20[-1]
-    latest_ema50 = ema50[-1]
-    latest_ema200 = ema200[-1]
+    latest_volume = volumes[-1]
 
-    score = 0
-    checks: List[str] = []
+    ema20_series = calculate_ema(closes, 20)
+    ema50_series = calculate_ema(closes, 50)
+    ema200_series = calculate_ema(closes, 200) if len(closes) >= 200 else []
 
-    if latest_price > latest_ema20:
-        score += 1
-        checks.append('Price > 20 EMA')
+    latest_ema20 = ema20_series[-1] if ema20_series else None
+    latest_ema50 = ema50_series[-1] if ema50_series else None
+    latest_ema200 = ema200_series[-1] if ema200_series else None
 
-    if latest_ema20 > latest_ema50:
-        score += 1
-        checks.append('20 EMA > 50 EMA')
+    reasons: List[str] = []
+    blockers: List[str] = []
 
-    if latest_ema50 > latest_ema200:
-        score += 1
-        checks.append('50 EMA > 200 EMA')
+    # --- Trend scoring (0-30) ---
+    trend_score = 0
+    if latest_ema200 is not None:
+        if latest_price > latest_ema200:
+            trend_score += 10
+            reasons.append('Price above 200 EMA')
+        else:
+            blockers.append('Price below 200 EMA — structural downtrend')
+    if latest_ema50 is not None and latest_price > latest_ema50:
+        trend_score += 8
+        reasons.append('Price above 50 EMA')
+    if latest_ema20 is not None and latest_price > latest_ema20:
+        trend_score += 7
+        reasons.append('Price above 20 EMA')
+    if latest_ema20 and latest_ema50 and latest_ema200:
+        if latest_ema20 > latest_ema50 > latest_ema200:
+            trend_score += 5
+            reasons.append('EMA stack fully aligned (20 > 50 > 200)')
+            ema_stack = 'aligned'
+        elif latest_ema20 > latest_ema50:
+            ema_stack = 'partial'
+        else:
+            ema_stack = 'bearish'
+    else:
+        ema_stack = 'unknown'
 
+    trend_context = TrendContext(
+        price=round(latest_price, 2),
+        ema20=round(latest_ema20, 2) if latest_ema20 is not None else 0.0,
+        ema50=round(latest_ema50, 2) if latest_ema50 is not None else 0.0,
+        ema200=round(latest_ema200, 2) if latest_ema200 is not None else 0.0,
+        price_vs_ema20='above' if latest_ema20 and latest_price > latest_ema20 else 'below',
+        price_vs_ema50='above' if latest_ema50 and latest_price > latest_ema50 else 'below',
+        price_vs_ema200='above' if latest_ema200 and latest_price > latest_ema200 else 'below',
+        ema_stack=ema_stack,
+        score=trend_score,
+    )
+
+    # --- Strength scoring (0-25) ---
     rsi = calculate_rsi(closes)
-    if rsi is not None and rsi > 50.0:
-        score += 1
-        checks.append(f'RSI {rsi:.1f} > 50')
+    strength_score = 0
+    rsi_label = 'unknown'
+    if rsi is not None:
+        if rsi > 80:
+            strength_score = 15
+            rsi_label = 'overbought'
+            blockers.append(f'RSI {rsi:.1f} — overbought, chasing risk')
+        elif rsi > 60:
+            strength_score = 25
+            rsi_label = 'bullish'
+            reasons.append(f'RSI {rsi:.1f} — bullish momentum')
+        elif rsi > 50:
+            strength_score = 15
+            rsi_label = 'neutral_bullish'
+            reasons.append(f'RSI {rsi:.1f} — above midline')
+        elif rsi > 40:
+            strength_score = 5
+            rsi_label = 'neutral'
+        else:
+            strength_score = 0
+            rsi_label = 'weak'
+            blockers.append(f'RSI {rsi:.1f} — momentum weak')
 
+    strength_context = StrengthContext(
+        rsi=round(rsi, 1) if rsi is not None else None,
+        rsi_label=rsi_label,
+        score=strength_score,
+    )
+
+    # --- Participation scoring (0-20) ---
     vol_ratio = calculate_volume_ratio(volumes)
-    if vol_ratio is not None and vol_ratio > 1.5:
-        score += 1
-        checks.append(f'Vol {vol_ratio:.1f}x 20-day avg')
+    participation_score = 0
+    vol_label = 'unknown'
+    avg_volume = 0.0
+    if vol_ratio is not None:
+        avg_volume = sum(volumes[-21:-1]) / 20
+        if vol_ratio > 2.0:
+            participation_score = 20
+            vol_label = 'high'
+            reasons.append(f'Volume {vol_ratio:.1f}x average — strong participation')
+        elif vol_ratio > 1.5:
+            participation_score = 15
+            vol_label = 'above_average'
+            reasons.append(f'Volume {vol_ratio:.1f}x average')
+        elif vol_ratio > 1.0:
+            participation_score = 8
+            vol_label = 'normal'
+        else:
+            participation_score = 0
+            vol_label = 'low'
+            if vol_ratio < 0.5:
+                blockers.append(f'Volume {vol_ratio:.1f}x — well below average, low conviction')
 
+    participation_context = ParticipationContext(
+        volume=latest_volume,
+        avg_volume=round(avg_volume, 0),
+        ratio=round(vol_ratio, 2) if vol_ratio is not None else None,
+        label=vol_label,
+        score=participation_score,
+    )
+
+    # --- RS vs Nifty scoring (0-15) ---
+    rs_score = 0
+    rs_value: Optional[float] = None
     try:
         nifty_token = get_nifty_instrument_token()
         nifty_candles = get_historical_candles(nifty_token, from_date, to_date, 'day')
         nifty_closes: List[float] = [float(c['close']) for c in nifty_candles]
-        rs = calculate_rs_vs_nifty(closes, nifty_closes)
-        if rs is not None and rs > 0.0:
-            score += 1
-            checks.append(f'RS vs Nifty +{rs * 100:.1f}%')
+        rs_value = calculate_rs_vs_nifty(closes, nifty_closes)
+        if rs_value is not None:
+            if rs_value > 0.05:
+                rs_score = 15
+                reasons.append(f'Outperforming Nifty by {rs_value * 100:.1f}%')
+            elif rs_value > 0.0:
+                rs_score = 10
+                reasons.append(f'Marginally ahead of Nifty +{rs_value * 100:.1f}%')
+            else:
+                blockers.append(f'Underperforming Nifty by {abs(rs_value) * 100:.1f}%')
     except Exception:
-        pass  # skip RS check if Nifty data unavailable
+        pass  # RS check is additive; skip cleanly if Nifty data unavailable
 
-    if score >= 5:
+    # --- Weekly confirmation scoring (0-10) ---
+    weekly_score = 0
+    weekly_context = WeeklyContext(available=False, score=0)
+    try:
+        weekly_candles = get_historical_candles(instrument_token, from_date, to_date, 'week')
+        if len(weekly_candles) >= 21:
+            weekly_closes = [float(c['close']) for c in weekly_candles]
+            weekly_ema20_series = calculate_ema(weekly_closes, 20)
+            if weekly_ema20_series:
+                w_price = weekly_closes[-1]
+                w_ema20 = weekly_ema20_series[-1]
+                above = w_price > w_ema20
+                weekly_score = 10 if above else 0
+                weekly_context = WeeklyContext(
+                    available=True,
+                    price_vs_weekly_ema20='above' if above else 'below',
+                    score=weekly_score,
+                )
+                if above:
+                    reasons.append('Weekly price above 20-week EMA — confirmed uptrend')
+    except Exception:
+        pass  # weekly is confirmation; skip cleanly if unavailable
+
+    # --- Final score (max = 30 + 25 + 20 + 15 + 10 = 100) ---
+    total_score = trend_score + strength_score + participation_score + rs_score + weekly_score
+
+    if total_score >= 75:
+        bucket = 'Trade Today'
         verdict = 'STRONG BUY'
-    elif score >= 3:
+    elif total_score >= 50:
+        bucket = 'Watch Tomorrow'
         verdict = 'BUY WATCH'
-    elif score >= 1:
+    elif total_score >= 25:
+        bucket = 'Needs Work'
         verdict = 'WAIT'
     else:
+        bucket = 'Reject'
         verdict = 'REJECT'
 
-    summary = f'{normalized} scored {score}/6. Checks: {", ".join(checks) or "none"}.'
-    trigger = f'Above {latest_ema20:.2f} (20 EMA)' if score >= 3 else None
-    stop = f'Below {latest_ema50:.2f} (50 EMA)'
+    trigger = f'Above {latest_ema20:.2f} (20 EMA)' if latest_ema20 and total_score >= 50 else None
+    stop = f'Below {latest_ema50:.2f} (50 EMA)' if latest_ema50 else None
+    summary = f'{normalized} scored {total_score}/100. Bucket: {bucket}.'
 
     return AnalyzeResult(
         ticker=normalized,
         verdict=verdict,
-        score=score,
+        score=total_score,
+        bucket=bucket,
+        price=round(latest_price, 2),
+        trend=trend_context,
+        strength=strength_context,
+        participation=participation_context,
+        weekly_context=weekly_context,
+        reasons=reasons,
+        blockers=blockers,
+        rs_vs_nifty=round(rs_value * 100, 2) if rs_value is not None else None,
         trigger=trigger,
         stop_loss=stop,
         target_1='Nearest resistance',
         target_2='Measured move target',
-        risk_reward='1:3.0+' if score >= 3 else None,
+        risk_reward='1:3.0+' if total_score >= 50 else None,
         summary=summary,
     )
 
