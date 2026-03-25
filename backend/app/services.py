@@ -255,13 +255,13 @@ def analyze_ticker_with_kite(ticker: str, date: Optional[str] = None) -> 'Analyz
         get_historical_candles,
         get_nifty_instrument_token,
     )
-    from .models import TrendContext, StrengthContext, ParticipationContext, WeeklyContext
+    from .models import ScoreBreakdown
 
     ensure_connected()
 
     normalized = ticker.upper().strip()
     to_date = datetime.strptime(date, '%Y-%m-%d') if date else datetime.today()
-    from_date = to_date - timedelta(days=400)  # buffer for 200-day EMA + 57 weekly candles
+    from_date = to_date - timedelta(days=400)  # buffer for 200-day EMA + ~57 weekly candles
 
     instrument_token = resolve_instrument_token(normalized)
     candles = get_historical_candles(instrument_token, from_date, to_date, 'day')
@@ -284,85 +284,102 @@ def analyze_ticker_with_kite(ticker: str, date: Optional[str] = None) -> 'Analyz
     latest_ema50 = ema50_series[-1] if ema50_series else None
     latest_ema200 = ema200_series[-1] if ema200_series else None
 
-    reasons: List[str] = []
-    blockers: List[str] = []
-
-    # --- Trend scoring (0-30) ---
-    trend_score = 0
-    if latest_ema200 is not None:
-        if latest_price > latest_ema200:
-            trend_score += 10
-            reasons.append('Price above 200 EMA')
-        else:
-            blockers.append('Price below 200 EMA — structural downtrend')
-    if latest_ema50 is not None and latest_price > latest_ema50:
-        trend_score += 8
-        reasons.append('Price above 50 EMA')
-    if latest_ema20 is not None and latest_price > latest_ema20:
-        trend_score += 7
-        reasons.append('Price above 20 EMA')
-    if latest_ema20 and latest_ema50 and latest_ema200:
-        if latest_ema20 > latest_ema50 > latest_ema200:
-            trend_score += 5
-            reasons.append('EMA stack fully aligned (20 > 50 > 200)')
-            ema_stack = 'aligned'
-        elif latest_ema20 > latest_ema50:
-            ema_stack = 'partial'
-        else:
-            ema_stack = 'bearish'
-    else:
-        ema_stack = 'unknown'
-
-    trend_context = TrendContext(
-        price=round(latest_price, 2),
-        ema20=round(latest_ema20, 2) if latest_ema20 is not None else 0.0,
-        ema50=round(latest_ema50, 2) if latest_ema50 is not None else 0.0,
-        ema200=round(latest_ema200, 2) if latest_ema200 is not None else 0.0,
-        price_vs_ema20='above' if latest_ema20 and latest_price > latest_ema20 else 'below',
-        price_vs_ema50='above' if latest_ema50 and latest_price > latest_ema50 else 'below',
-        price_vs_ema200='above' if latest_ema200 and latest_price > latest_ema200 else 'below',
-        ema_stack=ema_stack,
-        score=trend_score,
-    )
-
-    # --- Strength scoring (0-25) ---
+    avg_volume = sum(volumes[-21:-1]) / 20 if len(volumes) >= 21 else sum(volumes[:-1]) / max(len(volumes) - 1, 1)
+    vol_ratio = calculate_volume_ratio(volumes)
     rsi = calculate_rsi(closes)
+    extension_pct = (latest_price - latest_ema20) / latest_ema20 * 100 if latest_ema20 else None
+
+    hard_blockers: List[str] = []
+    blockers: List[str] = []
+    reasons: List[str] = []
+
+    # -------------------------------------------------------------------------
+    # HARD BLOCKERS — evaluated first, override bucket to Reject if any trigger
+    # -------------------------------------------------------------------------
+    if latest_price < 20:
+        hard_blockers.append(
+            f'Penny stock — price ₹{latest_price:.2f} is below ₹20 minimum'
+        )
+    if avg_volume < 200_000:
+        hard_blockers.append(
+            f'Illiquid — avg daily volume {avg_volume / 1000:.0f}k shares (minimum 200k required)'
+        )
+    if latest_ema200 is not None and latest_price < latest_ema200:
+        hard_blockers.append(
+            f'Price ₹{latest_price:.2f} below 200 EMA ₹{latest_ema200:.2f} — structural downtrend, long side blocked'
+        )
+
+    # -------------------------------------------------------------------------
+    # TREND SCORE (0-30): structure first — 200 EMA > 50 EMA stack > price vs 50
+    # -------------------------------------------------------------------------
+    trend_score = 0
+
+    if latest_ema200 is not None and latest_price > latest_ema200:
+        trend_score += 12
+        reasons.append('Price above 200 EMA — structural uptrend')
+
+    if latest_ema50 is not None and latest_ema200 is not None:
+        if latest_ema50 > latest_ema200:
+            trend_score += 10
+            reasons.append('50 EMA above 200 EMA — intermediate structure bullish')
+        else:
+            blockers.append('50 EMA below 200 EMA — intermediate structure bearish')
+
+    if latest_ema50 is not None:
+        if latest_price > latest_ema50:
+            trend_score += 8
+            reasons.append('Price above 50 EMA — intermediate trend intact')
+        else:
+            blockers.append('Price below 50 EMA — intermediate trend broken')
+
+    # -------------------------------------------------------------------------
+    # STRENGTH SCORE (0-25): RSI momentum + EMA20 short-term confirmation
+    # -------------------------------------------------------------------------
     strength_score = 0
     rsi_label = 'unknown'
+
     if rsi is not None:
         if rsi > 80:
-            strength_score = 15
+            strength_score += 10   # strong but overbought — partial credit
             rsi_label = 'overbought'
-            blockers.append(f'RSI {rsi:.1f} — overbought, chasing risk')
+            blockers.append(f'RSI {rsi:.1f} — overbought, elevated entry risk')
         elif rsi > 60:
-            strength_score = 25
+            strength_score += 20
             rsi_label = 'bullish'
             reasons.append(f'RSI {rsi:.1f} — bullish momentum')
         elif rsi > 50:
-            strength_score = 15
+            strength_score += 12
             rsi_label = 'neutral_bullish'
             reasons.append(f'RSI {rsi:.1f} — above midline')
         elif rsi > 40:
-            strength_score = 5
+            strength_score += 4
             rsi_label = 'neutral'
         else:
-            strength_score = 0
             rsi_label = 'weak'
             blockers.append(f'RSI {rsi:.1f} — momentum weak')
 
-    strength_context = StrengthContext(
-        rsi=round(rsi, 1) if rsi is not None else None,
-        rsi_label=rsi_label,
-        score=strength_score,
-    )
+    # EMA20 as short-term momentum addon (max +5, not structural)
+    if latest_ema20 is not None and latest_price > latest_ema20:
+        strength_score += 5
+        reasons.append('Price above 20 EMA — short-term momentum positive')
 
-    # --- Participation scoring (0-20) ---
-    vol_ratio = calculate_volume_ratio(volumes)
+    strength_score = min(strength_score, 25)
+
+    # Soft blockers that don't affect score
+    if extension_pct is not None and extension_pct > 8:
+        blockers.append(
+            f'Entry extended {extension_pct:.1f}% above 20 EMA — elevated risk, wait for pullback'
+        )
+    if 200_000 <= avg_volume < 500_000:
+        blockers.append(f'Low liquidity — avg volume {avg_volume / 1000:.0f}k shares/day')
+
+    # -------------------------------------------------------------------------
+    # PARTICIPATION SCORE (0-20): today's volume vs 20-day average
+    # -------------------------------------------------------------------------
     participation_score = 0
     vol_label = 'unknown'
-    avg_volume = 0.0
+
     if vol_ratio is not None:
-        avg_volume = sum(volumes[-21:-1]) / 20
         if vol_ratio > 2.0:
             participation_score = 20
             vol_label = 'high'
@@ -377,18 +394,10 @@ def analyze_ticker_with_kite(ticker: str, date: Optional[str] = None) -> 'Analyz
         else:
             participation_score = 0
             vol_label = 'low'
-            if vol_ratio < 0.5:
-                blockers.append(f'Volume {vol_ratio:.1f}x — well below average, low conviction')
 
-    participation_context = ParticipationContext(
-        volume=latest_volume,
-        avg_volume=round(avg_volume, 0),
-        ratio=round(vol_ratio, 2) if vol_ratio is not None else None,
-        label=vol_label,
-        score=participation_score,
-    )
-
-    # --- RS vs Nifty scoring (0-15) ---
+    # -------------------------------------------------------------------------
+    # RS VS NIFTY SCORE (0-15): 60-day relative performance
+    # -------------------------------------------------------------------------
     rs_score = 0
     rs_value: Optional[float] = None
     try:
@@ -406,35 +415,50 @@ def analyze_ticker_with_kite(ticker: str, date: Optional[str] = None) -> 'Analyz
             else:
                 blockers.append(f'Underperforming Nifty by {abs(rs_value) * 100:.1f}%')
     except Exception:
-        pass  # RS check is additive; skip cleanly if Nifty data unavailable
+        pass  # additive check — skip cleanly if Nifty data unavailable
 
-    # --- Weekly confirmation scoring (0-10) ---
+    # -------------------------------------------------------------------------
+    # WEEKLY SCORE (0-10): price vs weekly EMA20 (+8) + slope direction (+2)
+    # -------------------------------------------------------------------------
     weekly_score = 0
-    weekly_context = WeeklyContext(available=False, score=0)
+    weekly_ema20_val: Optional[float] = None
+    weekly_ema_slope: Optional[str] = None
     try:
         weekly_candles = get_historical_candles(instrument_token, from_date, to_date, 'week')
-        if len(weekly_candles) >= 21:
+        if len(weekly_candles) >= 22:
             weekly_closes = [float(c['close']) for c in weekly_candles]
             weekly_ema20_series = calculate_ema(weekly_closes, 20)
-            if weekly_ema20_series:
+            if len(weekly_ema20_series) >= 2:
                 w_price = weekly_closes[-1]
-                w_ema20 = weekly_ema20_series[-1]
-                above = w_price > w_ema20
-                weekly_score = 10 if above else 0
-                weekly_context = WeeklyContext(
-                    available=True,
-                    price_vs_weekly_ema20='above' if above else 'below',
-                    score=weekly_score,
-                )
-                if above:
-                    reasons.append('Weekly price above 20-week EMA — confirmed uptrend')
-    except Exception:
-        pass  # weekly is confirmation; skip cleanly if unavailable
+                w_ema20_now = weekly_ema20_series[-1]
+                w_ema20_prev = weekly_ema20_series[-2]
+                weekly_ema20_val = round(w_ema20_now, 2)
+                weekly_ema_slope = 'rising' if w_ema20_now > w_ema20_prev else 'falling'
 
-    # --- Final score (max = 30 + 25 + 20 + 15 + 10 = 100) ---
+                if w_price > w_ema20_now:
+                    weekly_score += 8
+                    reasons.append('Weekly price above 20-week EMA — uptrend confirmed')
+                else:
+                    blockers.append('Weekly price below 20-week EMA — weekly trend not confirmed')
+
+                if weekly_ema_slope == 'rising':
+                    weekly_score += 2
+                    reasons.append('Weekly 20 EMA rising — trend strength intact')
+                else:
+                    blockers.append('Weekly 20 EMA declining — trend losing momentum')
+    except Exception:
+        pass  # confirmation only — skip cleanly if unavailable
+
+    # -------------------------------------------------------------------------
+    # FINAL SCORE AND BUCKET
+    # Hard blockers override bucket to Reject regardless of score.
+    # -------------------------------------------------------------------------
     total_score = trend_score + strength_score + participation_score + rs_score + weekly_score
 
-    if total_score >= 75:
+    if hard_blockers:
+        bucket = 'Reject'
+        verdict = 'REJECT'
+    elif total_score >= 75:
         bucket = 'Trade Today'
         verdict = 'STRONG BUY'
     elif total_score >= 50:
@@ -447,9 +471,14 @@ def analyze_ticker_with_kite(ticker: str, date: Optional[str] = None) -> 'Analyz
         bucket = 'Reject'
         verdict = 'REJECT'
 
-    trigger = f'Above {latest_ema20:.2f} (20 EMA)' if latest_ema20 and total_score >= 50 else None
+    trigger = (
+        f'Above {latest_ema20:.2f} (20 EMA)'
+        if latest_ema20 and not hard_blockers and total_score >= 50
+        else None
+    )
     stop = f'Below {latest_ema50:.2f} (50 EMA)' if latest_ema50 else None
-    summary = f'{normalized} scored {total_score}/100. Bucket: {bucket}.'
+    blocked_tag = ' [HARD BLOCKED]' if hard_blockers else ''
+    summary = f'{normalized} scored {total_score}/100. Bucket: {bucket}.{blocked_tag}'
 
     return AnalyzeResult(
         ticker=normalized,
@@ -457,20 +486,84 @@ def analyze_ticker_with_kite(ticker: str, date: Optional[str] = None) -> 'Analyz
         score=total_score,
         bucket=bucket,
         price=round(latest_price, 2),
-        trend=trend_context,
-        strength=strength_context,
-        participation=participation_context,
-        weekly_context=weekly_context,
+        hard_blockers=hard_blockers,
+        score_breakdown=ScoreBreakdown(
+            trend=trend_score,
+            strength=strength_score,
+            participation=participation_score,
+            rs_vs_nifty=rs_score,
+            weekly=weekly_score,
+        ),
         reasons=reasons,
         blockers=blockers,
-        rs_vs_nifty=round(rs_value * 100, 2) if rs_value is not None else None,
+        metrics={
+            'ema20': round(latest_ema20, 2) if latest_ema20 is not None else None,
+            'ema50': round(latest_ema50, 2) if latest_ema50 is not None else None,
+            'ema200': round(latest_ema200, 2) if latest_ema200 is not None else None,
+            'rsi': round(rsi, 1) if rsi is not None else None,
+            'rsi_label': rsi_label,
+            'volume': latest_volume,
+            'avg_volume': round(avg_volume, 0),
+            'volume_ratio': round(vol_ratio, 2) if vol_ratio is not None else None,
+            'volume_label': vol_label,
+            'rs_vs_nifty_pct': round(rs_value * 100, 2) if rs_value is not None else None,
+            'extension_pct': round(extension_pct, 1) if extension_pct is not None else None,
+            'weekly_ema20': weekly_ema20_val,
+            'weekly_ema_slope': weekly_ema_slope,
+        },
         trigger=trigger,
         stop_loss=stop,
         target_1='Nearest resistance',
         target_2='Measured move target',
-        risk_reward='1:3.0+' if total_score >= 50 else None,
+        risk_reward='1:3.0+' if total_score >= 50 and not hard_blockers else None,
         summary=summary,
     )
+
+
+def scan_symbols(symbols: List[str], date: Optional[str] = None) -> List['ScannerResultItem']:
+    """
+    Score a list of NSE symbols using the deterministic PTS engine.
+    Each symbol is attempted independently; failures produce an error row instead
+    of aborting the whole scan.  Results are sorted strongest-first, errors last.
+    """
+    from .models import ScannerResultItem
+
+    results: List[ScannerResultItem] = []
+    for raw in symbols:
+        symbol = raw.upper().strip()
+        if not symbol:
+            continue
+        try:
+            analysis = analyze_ticker_with_kite(symbol, date)
+            results.append(ScannerResultItem(
+                ticker=analysis.ticker,
+                price=analysis.price,
+                total_score=analysis.score,
+                bucket=analysis.bucket,
+                hard_blockers=analysis.hard_blockers,
+                score_breakdown=analysis.score_breakdown,
+                reasons=analysis.reasons,
+                blockers=analysis.blockers,
+                metrics=analysis.metrics,
+            ))
+        except Exception as exc:
+            results.append(ScannerResultItem(
+                ticker=symbol,
+                price=None,
+                total_score=0,
+                bucket='Error',
+                hard_blockers=[],
+                score_breakdown=None,
+                reasons=[],
+                blockers=[],
+                metrics=None,
+                error=str(exc),
+            ))
+
+    # Sort: Trade Today first, then by score desc, errors at the end
+    bucket_order = {'Trade Today': 0, 'Watch Tomorrow': 1, 'Needs Work': 2, 'Reject': 3, 'Error': 4}
+    results.sort(key=lambda r: (bucket_order.get(r.bucket or 'Error', 4), -r.total_score))
+    return results
 
 
 def analyze_ticker(ticker: str, date: Optional[str] = None) -> AnalyzeResult:

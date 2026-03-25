@@ -1,4 +1,4 @@
-from typing import Literal, Optional, List
+from typing import Any, Dict, Literal, Optional, List
 from pydantic import BaseModel, Field
 
 MarketRegime = Literal['green', 'yellow', 'red', 'unset']
@@ -32,51 +32,25 @@ class AnalyzeTickerRequest(BaseModel):
     date: Optional[str] = None
 
 
-class TrendContext(BaseModel):
-    price: float
-    ema20: float
-    ema50: float
-    ema200: float
-    price_vs_ema20: str   # "above" / "below"
-    price_vs_ema50: str
-    price_vs_ema200: str
-    ema_stack: str        # "aligned" / "partial" / "bearish" / "unknown"
-    score: int            # 0-30
-
-
-class StrengthContext(BaseModel):
-    rsi: Optional[float]
-    rsi_label: str        # "overbought" / "bullish" / "neutral_bullish" / "neutral" / "weak"
-    score: int            # 0-25
-
-
-class ParticipationContext(BaseModel):
-    volume: int
-    avg_volume: float
-    ratio: Optional[float]
-    label: str            # "high" / "above_average" / "normal" / "low"
-    score: int            # 0-20
-
-
-class WeeklyContext(BaseModel):
-    available: bool
-    price_vs_weekly_ema20: Optional[str] = None  # "above" / "below"
-    score: int = 0        # 0-10
+class ScoreBreakdown(BaseModel):
+    trend: int        # 0-30: structural EMA alignment
+    strength: int     # 0-25: RSI + EMA20 momentum
+    participation: int  # 0-20: volume vs average
+    rs_vs_nifty: int  # 0-15: relative strength vs index
+    weekly: int       # 0-10: weekly EMA20 position + slope
 
 
 class AnalyzeResult(BaseModel):
     ticker: str
-    verdict: str          # kept for frontend backward compat
-    score: int            # 0-100
-    bucket: Optional[str] = None
+    verdict: str                              # kept for frontend backward compat
+    score: int                                # 0-100 total
+    bucket: Optional[str] = None             # "Trade Today" / "Watch Tomorrow" / "Needs Work" / "Reject"
     price: Optional[float] = None
-    trend: Optional[TrendContext] = None
-    strength: Optional[StrengthContext] = None
-    participation: Optional[ParticipationContext] = None
-    weekly_context: Optional[WeeklyContext] = None
+    hard_blockers: List[str] = Field(default_factory=list)  # override bucket to Reject if non-empty
+    score_breakdown: Optional[ScoreBreakdown] = None
     reasons: Optional[List[str]] = None
     blockers: Optional[List[str]] = None
-    rs_vs_nifty: Optional[float] = None  # % delta vs Nifty over 60 days
+    metrics: Optional[Dict[str, Any]] = None  # flat dict of all computed values
     trigger: Optional[str] = None
     stop_loss: Optional[str] = None
     target_1: Optional[str] = None
@@ -109,6 +83,46 @@ class TradeRecord(BaseModel):
     target_2: Optional[str] = None
     note: Optional[str] = None
     status: str = 'open'
+
+
+class ScannerScoreRequest(BaseModel):
+    symbols: List[str]
+    date: Optional[str] = None  # YYYY-MM-DD, defaults to today
+
+
+class ScannerResultItem(BaseModel):
+    ticker: str
+    price: Optional[float] = None
+    total_score: int = 0
+    bucket: Optional[str] = None
+    hard_blockers: List[str] = Field(default_factory=list)
+    score_breakdown: Optional[ScoreBreakdown] = None
+    reasons: Optional[List[str]] = None
+    blockers: Optional[List[str]] = None
+    metrics: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None  # set when this symbol failed; score will be 0
+
+
+class ScannerScoreResponse(BaseModel):
+    count: int
+    results: List[ScannerResultItem]
+
+
+class AiResultItem(BaseModel):
+    ticker: str
+    total_score: int
+    deterministic_bucket: str     # what the scoring engine decided
+    ai_bucket: str                # "Trade Today" / "Watch Tomorrow" / "Reject" — AI may downgrade only
+    ai_explanation: str           # 1-2 sentence plain-English rationale
+    cautions: List[str] = Field(default_factory=list)  # max 2 specific cautions
+    trigger_note: Optional[str] = None  # clean actionable entry language
+    ai_available: bool = True     # False when AI call failed; deterministic values are shown
+
+
+class AiScannerResponse(BaseModel):
+    count: int
+    ai_available: bool            # False when the entire AI call failed or key is missing
+    results: List[AiResultItem]
 
 
 class KiteLoginUrlResponse(BaseModel):
