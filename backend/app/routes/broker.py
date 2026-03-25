@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -11,37 +11,34 @@ from app.kite_client import (
     get_login_url,
     is_kite_configured,
 )
-from app.models import KiteLoginUrlResponse, KiteStatusResponse
 
 router = APIRouter(prefix='/broker/kite', tags=['broker-kite'])
 
 
-@router.get('/login-url', response_model=KiteLoginUrlResponse)
-def kite_login_url() -> KiteLoginUrlResponse:
-    status = get_kite_status()
-
+@router.get('/login-url')
+def kite_login_url() -> Dict[str, Any]:
     if not is_kite_configured():
-        return KiteLoginUrlResponse(
-            configured=False,
-            connected=status['connected'],
-            login_url=None,
-            message='Kite backend env vars are missing. Set KITE_API_KEY, KITE_API_SECRET, and KITE_REDIRECT_URL.',
+        raise HTTPException(
+            status_code=503,
+            detail='Kite is not configured. Set KITE_API_KEY, KITE_API_SECRET, and KITE_REDIRECT_URL.',
         )
-
     try:
-        return KiteLoginUrlResponse(
-            configured=True,
-            connected=status['connected'],
-            login_url=get_login_url(),
-            message='Kite login URL generated.',
-        )
+        return {'url': get_login_url()}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.get('/status', response_model=KiteStatusResponse)
-def kite_status() -> KiteStatusResponse:
-    return KiteStatusResponse(**get_kite_status())
+@router.get('/status')
+def kite_status() -> Dict[str, Any]:
+    raw = get_kite_status()
+    if not raw['connected']:
+        return {'connected': False, 'error': 'Kite is not connected.'}
+    return {
+        'connected': True,
+        'user_id': raw.get('user_id'),
+        'user_name': raw.get('user_name'),
+        'login_time': raw.get('login_time'),
+    }
 
 
 @router.get('/callback')
@@ -114,4 +111,4 @@ def kite_callback(
 @router.post('/logout')
 def kite_logout() -> dict:
     clear_kite_session()
-    return {'ok': True, 'message': 'Kite session cleared from backend memory.'}
+    return {'ok': True, 'message': 'Kite logged out successfully.'}
