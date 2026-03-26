@@ -1,0 +1,123 @@
+#!/bin/bash
+# scripts/pre-commit
+# Runs PTS test suite before every commit.
+# Install: bash scripts/install-hooks.sh
+# Skip once: git commit --no-verify
+
+set -e
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  P Trade — Pre-Commit Test Suite"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+FAILED=0
+
+# Load nvm so node/npx are available
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+
+# ── SECURITY: Block .env commits ────────────────────────────────────────────
+echo "🔒 Checking for secrets in staged files..."
+
+STAGED=$(git diff --cached --name-only)
+
+for f in $STAGED; do
+  if echo "$f" | grep -qE "^\.env$|/\.env$|\.env\.local$"; then
+    echo -e "${RED}✗ BLOCKED: $f is staged for commit.${NC}"
+    echo "  Remove it: git reset HEAD $f"
+    exit 1
+  fi
+done
+
+STAGED_PY=$(git diff --cached --name-only | grep -E "\.py$" || true)
+if [ -n "$STAGED_PY" ]; then
+  if git diff --cached -- $STAGED_PY | grep "^+" | grep -qE "(sk-ant-[a-zA-Z0-9]{20,})"; then
+    echo -e "${RED}✗ BLOCKED: Anthropic API key detected in staged Python files.${NC}"
+    exit 1
+  fi
+fi
+
+echo -e "${GREEN}✓ No secrets detected${NC}"
+echo ""
+
+# ── BACKEND TESTS ──────────────────────────────────────────────────────────
+echo "🐍 Running backend tests..."
+echo ""
+
+cd "$REPO_ROOT"
+
+# Prefer venv pytest, fall back to system python3 -m pytest
+VENV_PYTEST="$REPO_ROOT/backend/.venv/bin/pytest"
+if [ -f "$VENV_PYTEST" ]; then
+  PYTEST_CMD="$VENV_PYTEST"
+elif python3 -m pytest --version &> /dev/null 2>&1; then
+  PYTEST_CMD="python3 -m pytest"
+else
+  PYTEST_CMD=""
+fi
+
+if [ -z "$PYTEST_CMD" ]; then
+  echo -e "${YELLOW}⚠ pytest not found — install: pip install pytest pytest-asyncio httpx${NC}"
+else
+  $PYTEST_CMD \
+    tests/backend/test_pts_backend.py::TestPositionSizing \
+    tests/backend/test_pts_backend.py::TestRiskRewardValidation \
+    tests/backend/test_pts_backend.py::TestTrailingStopLossZones \
+    tests/backend/test_pts_backend.py::TestMarketRegimeLogic \
+    tests/backend/test_pts_backend.py::TestScreenerPreFilter \
+    tests/backend/test_pts_backend.py::TestClaudeResponseParsing \
+    tests/backend/test_pts_backend.py::TestPnLCalculation \
+    tests/backend/test_pts_backend.py::TestRegressionGuard \
+    -q --tb=short --no-header 2>&1
+
+  if [ ${PIPESTATUS[0]} -ne 0 ]; then
+    echo -e "${RED}✗ Backend tests failed — commit blocked.${NC}"
+    FAILED=1
+  else
+    echo -e "${GREEN}✓ Backend tests passed${NC}"
+  fi
+fi
+
+echo ""
+
+# ── FRONTEND TESTS ─────────────────────────────────────────────────────────
+echo "📦 Running frontend tests..."
+echo ""
+
+cd "$REPO_ROOT/frontend"
+
+if [ ! -f "node_modules/.bin/jest" ]; then
+  echo -e "${YELLOW}⚠ Jest not found — install: npm install --save-dev jest @types/jest ts-jest${NC}"
+else
+  npx jest --testPathPattern="pts.test.ts" --no-coverage 2>&1
+
+  if [ ${PIPESTATUS[0]} -ne 0 ]; then
+    echo -e "${RED}✗ Frontend tests failed — commit blocked.${NC}"
+    FAILED=1
+  else
+    echo -e "${GREEN}✓ Frontend tests passed${NC}"
+  fi
+fi
+
+echo ""
+
+# ── RESULT ─────────────────────────────────────────────────────────────────
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+if [ $FAILED -ne 0 ]; then
+  echo -e "${RED}  COMMIT BLOCKED — fix failing tests first${NC}"
+  echo "  Emergency skip: git commit --no-verify"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  exit 1
+else
+  echo -e "${GREEN}  All tests passed — proceeding with commit ✓${NC}"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  exit 0
+fi

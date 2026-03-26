@@ -1,5 +1,5 @@
-from typing import Any, Dict, Literal, Optional, List
-from pydantic import BaseModel, Field
+from typing import Any, Dict, Literal, Optional, List, Union
+from pydantic import BaseModel, ConfigDict, Field
 
 MarketRegime = Literal['green', 'yellow', 'red', 'unset']
 BucketType = Literal['trade_today', 'watch_tomorrow', 'reject']
@@ -8,7 +8,7 @@ SourceType = Literal['csv', 'screenshot']
 
 class MarketState(BaseModel):
     regime: MarketRegime = 'unset'
-    note: str = 'Market not evaluated yet.'
+    note: str = 'Market regime not yet evaluated — real Nifty data connection required.'
 
 
 class WatchlistItem(BaseModel):
@@ -18,7 +18,8 @@ class WatchlistItem(BaseModel):
     sector: Optional[str] = None
     source: SourceType = 'csv'
     bucket: BucketType = 'watch_tomorrow'
-    score: int = Field(default=0, ge=0, le=20)
+    # FIX: Bug 2 — Score is 0-100 to match the deterministic engine; old le=20 was wrong
+    score: int = Field(default=0, ge=0, le=100)
     trigger: Optional[str] = None
     stop_loss: Optional[str] = None
     target_1: Optional[str] = None
@@ -59,6 +60,11 @@ class AnalyzeResult(BaseModel):
     summary: Optional[str] = None
 
 
+class TradeUpdateRequest(BaseModel):
+    status: Optional[str] = None
+    current_price: Optional[float] = None
+
+
 class ScannerRunRequest(BaseModel):
     source: str = 'watchlist'
     refresh: bool = False
@@ -66,6 +72,7 @@ class ScannerRunRequest(BaseModel):
 
 
 class TradeCreateRequest(BaseModel):
+    model_config = ConfigDict(coerce_numbers_to_str=True)
     ticker: str
     entry: Optional[str] = None
     stop_loss: Optional[str] = None
@@ -123,6 +130,28 @@ class AiScannerResponse(BaseModel):
     count: int
     ai_available: bool            # False when the entire AI call failed or key is missing
     results: List[AiResultItem]
+
+
+class TradeReviewResult(BaseModel):
+    symbol: str
+    company_name: Optional[str] = None
+    market_regime: Optional[str] = None
+    price: Optional[float] = None
+    score_breakdown: Optional[ScoreBreakdown] = None
+    total_score: int
+    bucket: Optional[str] = None
+    hard_blockers: List[str] = Field(default_factory=list)
+    trigger_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    target_1: Optional[float] = None
+    target_2: Optional[float] = None
+    risk_reward: Optional[float] = None
+    weekly_note: Optional[str] = None
+    invalidation_rule: Optional[str] = None
+    reasons: Optional[List[str]] = None
+    blockers: Optional[List[str]] = None
+    metrics: Optional[Dict[str, Any]] = None
+    ai_explanation: Optional[str] = None
 
 
 class KiteLoginUrlResponse(BaseModel):

@@ -1,11 +1,13 @@
+import base64
 import csv
 import io
-import random
+import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
+from .config import settings
 from .models import AnalyzeResult, MarketState, TradeRecord, WatchlistItem
 
 
@@ -29,7 +31,7 @@ SECTOR_MAP = {
     'APLAPOLLO': 'Metals',
 }
 
-CSV_TICKER_KEYS = ['ticker', 'symbol', 'stock', 'tradingsymbol', 'nse code', 'nsecode', 'code']
+CSV_TICKER_KEYS = ['ticker', 'symbol', 'stock', 'tradingsymbol', 'nse code', 'nsecode', 'code', 'name']
 CSV_NAME_KEYS = ['name', 'company', 'company name', 'company_name', 'stock name']
 CSV_SECTOR_KEYS = ['industry', 'sector', 'industry group']
 
@@ -111,95 +113,181 @@ def import_screener_csv(file_bytes: bytes) -> List[WatchlistItem]:
 
 
 def import_screener_screenshot(file_bytes: bytes) -> List[WatchlistItem]:
-    # Placeholder extraction until real OCR / vision is added.
-    demo_rows = [
-        ('POLYCAB', 'Polycab India Ltd', 'Capital Goods'),
-        ('BSE', 'BSE Ltd', 'Financials'),
-        ('CAMS', 'Computer Age Management Services Ltd', 'Financials'),
-        ('KEI', 'KEI Industries Ltd', 'Capital Goods'),
-        ('ZOMATO', 'Zomato Ltd', 'Consumer Internet'),
-    ]
+    # FIX: Bug 1 — Send actual image bytes to Claude; never return hardcoded mock data.
+    if not settings.anthropic_api_key:
+        raise ValueError(
+            'ANTHROPIC_API_KEY is not set. Screenshot import requires Claude AI. '
+            'Add ANTHROPIC_API_KEY to your .env file.'
+        )
 
-    items = [
-        WatchlistItem(
+    try:
+        import anthropic
+    except ImportError:
+        raise ValueError('anthropic SDK is not installed. Run: pip install anthropic>=0.40.0')
+
+    # Detect image media type from magic bytes
+    if file_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+        media_type = 'image/png'
+    elif file_bytes[:3] == b'\xff\xd8\xff':
+        media_type = 'image/jpeg'
+    elif file_bytes[:4] == b'RIFF' and file_bytes[8:12] == b'WEBP':
+        media_type = 'image/webp'
+    else:
+        media_type = 'image/jpeg'  # fallback
+
+    image_data = base64.standard_b64encode(file_bytes).decode('utf-8')
+
+    # FIX: Bug 1 — System prompt matches the battle-tested PTS screener prompt from project spec
+    system_prompt = (
+        'You are an expert NSE trader using PTS (Pradyumna Trading System). '
+        'The user uploaded a screener.in screenshot. '
+        'Extract ALL visible stock tickers/symbols shown in the table. '
+        'Do not invent tickers — only extract what is actually visible in the image. '
+        'Apply a basic PTS pre-filter inference (trend, tide, 52w position) where visible. '
+        'Rank strongest to weakest based on what you can read. '
+        'Return ONLY valid JSON — no markdown, no explanation, no code blocks.\n\n'
+        'Format: {"stocks":[{"rank":1,"ticker":"SYMBOL","company_name":"Full Name or null",'
+        '"signal":"brief one-line reason or null"}]}'
+    )
+
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    response = client.messages.create(
+        model='claude-sonnet-4-6',
+        max_tokens=1024,
+        system=system_prompt,
+        messages=[{
+            'role': 'user',
+            'content': [
+                {
+                    'type': 'image',
+                    'source': {
+                        'type': 'base64',
+                        'media_type': media_type,
+                        'data': image_data,
+                    },
+                },
+                {
+                    'type': 'text',
+                    'text': (
+                        'Extract all stock tickers from this screener screenshot. '
+                        'Return only the JSON with the stocks array.'
+                    ),
+                },
+            ],
+        }],
+    )
+
+    raw_text = response.content[0].text.strip()
+
+    # Strip markdown code fences if Claude wraps them despite the instruction
+    if raw_text.startswith('```'):
+        lines = raw_text.split('\n')
+        raw_text = '\n'.join(
+            line for line in lines
+            if not line.strip().startswith('```')
+        ).strip()
+
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f'Claude returned unparseable JSON: {exc}. Raw: {raw_text[:200]}')
+
+    stocks = parsed.get('stocks', [])
+    if not stocks:
+        raise ValueError('Claude could not extract any tickers from the screenshot.')
+
+    items: List[WatchlistItem] = []
+    for stock in stocks:
+        ticker = str(stock.get('ticker') or '').upper().strip()
+        if not ticker:
+            continue
+        ticker = ticker.replace('NSE:', '').replace('BSE:', '').strip()
+        if not ticker:
+            continue
+
+        company_name: Optional[str] = stock.get('company_name') or None
+        signal: Optional[str] = stock.get('signal') or None
+
+        items.append(WatchlistItem(
             id=str(uuid.uuid4()),
             ticker=ticker,
-            company_name=name,
-            sector=sector,
+            company_name=company_name,
+            sector=SECTOR_MAP.get(ticker, 'Unknown'),
             source='screenshot',
             bucket='watch_tomorrow',
             score=0,
-            summary='Extracted from screenshot preview.',
+            summary=signal or 'Extracted from screenshot.',
             trigger='Needs confirmation',
-        )
-        for ticker, name, sector in demo_rows
-    ]
+        ))
+
+    if not items:
+        raise ValueError('No valid tickers could be parsed from the Claude response.')
 
     store.watchlist = _dedupe_watchlist(items)
     return store.watchlist
 
 
 def score_shortlist(provided_watchlist: Optional[List[WatchlistItem]] = None) -> List[WatchlistItem]:
+    """
+    Score each item using the real deterministic Kite-backed engine (analyze_ticker_with_kite).
+    Preserves the original import metadata (company_name, sector, source, id) from the watchlist item.
+    Requires Kite to be connected — raises ValueError if not.
+
+    NOTE: scan_symbols() is defined later in this file; this call is valid at runtime.
+    """
     base_watchlist = provided_watchlist if provided_watchlist else store.watchlist
     if not base_watchlist:
-        base_watchlist = [
-            WatchlistItem(
-                id=str(uuid.uuid4()),
-                ticker='POLYCAB',
-                company_name='Polycab India Ltd',
-                sector='Capital Goods',
-                source='csv',
-            ),
-            WatchlistItem(
-                id=str(uuid.uuid4()),
-                ticker='BSE',
-                company_name='BSE Ltd',
-                sector='Financials',
-                source='csv',
-            ),
-        ]
+        return []
 
-    regime = fake_market_regime().regime
+    tickers = [item.ticker.upper().strip() for item in base_watchlist if item.ticker.strip()]
+    # Preserve original import metadata keyed by ticker
+    meta: Dict[str, WatchlistItem] = {item.ticker.upper().strip(): item for item in base_watchlist}
+
+    # Real deterministic scoring — one Kite call per ticker
+    scan_results = scan_symbols(tickers)
+
+    # Map ScannerResultItem bucket strings → WatchlistItem BucketType literals
+    _BUCKET_MAP: Dict[str, str] = {
+        'Trade Today': 'trade_today',
+        'Watch Tomorrow': 'watch_tomorrow',
+    }
+
     scored: List[WatchlistItem] = []
+    for result in scan_results:
+        original = meta.get(result.ticker)
+        bucket_key = _BUCKET_MAP.get(result.bucket or '', 'reject')
 
-    for item in base_watchlist:
-        base = random.randint(7, 19)
-        if regime == 'green':
-            score = min(20, base + 1)
-        elif regime == 'red':
-            score = max(0, base - 3)
+        m = result.metrics or {}
+        ema20 = m.get('ema20')
+
+        if result.error:
+            trigger_text = None
+            summary = f'Analysis failed: {result.error}'
         else:
-            score = base
-
-        if score >= 16:
-            bucket = 'trade_today'
-            summary = 'High-quality candidate after shortlist scoring.'
-            trigger = f'Breakout above recent pivot in {item.ticker}'
-        elif score >= 11:
-            bucket = 'watch_tomorrow'
-            summary = 'Decent setup, but needs confirmation.'
-            trigger = f'Watch {item.ticker} for confirmation tomorrow'
-        else:
-            bucket = 'reject'
-            summary = 'Weak structure or low priority relative to other names.'
-            trigger = None
-
-        scored.append(
-            item.model_copy(
-                update={
-                    'score': score,
-                    'bucket': bucket,
-                    'summary': summary,
-                    'trigger': trigger,
-                    'stop_loss': 'Auto from structure',
-                    'target_1': 'T1 from resistance',
-                    'target_2': 'T2 from measured move',
-                    'risk_reward': '1:3.0+',
-                }
+            hard_tag = ' [HARD BLOCKED]' if result.hard_blockers else ''
+            summary = f'{result.ticker} scored {result.total_score}/100. Bucket: {result.bucket or "Reject"}.{hard_tag}'
+            trigger_text = (
+                f'Above ₹{ema20:.2f} (20 EMA)'
+                if ema20 and bucket_key != 'reject'
+                else None
             )
-        )
 
-    scored.sort(key=lambda x: (x.bucket != 'trade_today', x.bucket != 'watch_tomorrow', -x.score))
+        scored.append(WatchlistItem(
+            id=original.id if original else str(uuid.uuid4()),
+            ticker=result.ticker,
+            company_name=original.company_name if original else None,
+            sector=original.sector if original else None,
+            source=original.source if original else 'csv',
+            bucket=bucket_key,  # type: ignore[arg-type]
+            score=result.total_score,
+            summary=summary,
+            trigger=trigger_text,
+            stop_loss=None,
+            target_1=None,
+            target_2=None,
+            risk_reward=None,
+        ))
+
     store.watchlist = scored
     return scored
 
@@ -517,6 +605,115 @@ def analyze_ticker_with_kite(ticker: str, date: Optional[str] = None) -> 'Analyz
         target_2='Measured move target',
         risk_reward='1:3.0+' if total_score >= 50 and not hard_blockers else None,
         summary=summary,
+    )
+
+
+def build_trade_review(ticker: str, date: Optional[str] = None) -> 'TradeReviewResult':
+    """
+    Full trade review card for one ticker.
+    Runs the deterministic scorer, derives numeric trade levels, adds weekly note,
+    invalidation rule, and an AI explanation (falls back gracefully if unavailable).
+    """
+    from .kite_client import resolve_company_name
+    from .models import ScannerResultItem, TradeReviewResult
+
+    analysis = analyze_ticker_with_kite(ticker, date)
+    m = analysis.metrics or {}
+
+    company_name = resolve_company_name(analysis.ticker)
+
+    # -------------------------------------------------------------------------
+    # Numeric trade levels — only computed for tradeable buckets
+    # -------------------------------------------------------------------------
+    trigger_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    target_1: Optional[float] = None
+    target_2: Optional[float] = None
+    rr: Optional[float] = None
+
+    ema20 = m.get('ema20')
+    ema50 = m.get('ema50')
+
+    if not analysis.hard_blockers and analysis.score >= 50 and ema20 and ema50:
+        trigger_price = round(ema20, 2)
+        stop_price = round(ema50 * 0.99, 2)
+        risk = trigger_price - stop_price
+        if risk > 0:
+            target_1 = round(trigger_price + 1.5 * risk, 2)
+            target_2 = round(trigger_price + 3.0 * risk, 2)
+            rr = round((target_2 - trigger_price) / risk, 1)
+
+    # -------------------------------------------------------------------------
+    # Weekly note — plain-English summary of weekly trend
+    # -------------------------------------------------------------------------
+    weekly_note: Optional[str] = None
+    weekly_slope = m.get('weekly_ema_slope')
+    weekly_ema20 = m.get('weekly_ema20')
+    price = analysis.price
+    if weekly_slope and weekly_ema20 and price is not None:
+        slope_str = 'rising' if weekly_slope == 'rising' else 'declining'
+        position_str = 'above' if price > weekly_ema20 else 'below'
+        weekly_note = (
+            f'Weekly 20 EMA is {slope_str} at ₹{weekly_ema20:.2f}. '
+            f'Price is {position_str} weekly trend support.'
+        )
+
+    # -------------------------------------------------------------------------
+    # Invalidation rule
+    # -------------------------------------------------------------------------
+    invalidation_rule: Optional[str] = None
+    if stop_price:
+        invalidation_rule = (
+            f'Trade invalid on daily close below ₹{stop_price:.2f} (50 EMA support zone).'
+        )
+    elif analysis.hard_blockers:
+        invalidation_rule = 'Rejected — hard blockers present. Do not trade.'
+
+    # -------------------------------------------------------------------------
+    # AI explanation — single-item batch, graceful fallback
+    # -------------------------------------------------------------------------
+    ai_explanation: Optional[str] = None
+    try:
+        from .ai_layer import enrich_with_ai
+        scan_item = ScannerResultItem(
+            ticker=analysis.ticker,
+            price=analysis.price,
+            total_score=analysis.score,
+            bucket=analysis.bucket,
+            hard_blockers=analysis.hard_blockers,
+            score_breakdown=analysis.score_breakdown,
+            reasons=analysis.reasons,
+            blockers=analysis.blockers,
+            metrics=analysis.metrics,
+        )
+        ai_response = enrich_with_ai([scan_item])
+        if ai_response.ai_available and ai_response.results:
+            ai_explanation = ai_response.results[0].ai_explanation or None
+    except Exception:
+        pass
+
+    market_regime = store.market.regime if store.market.regime != 'unset' else None
+
+    return TradeReviewResult(
+        symbol=analysis.ticker,
+        company_name=company_name,
+        market_regime=market_regime,
+        price=analysis.price,
+        score_breakdown=analysis.score_breakdown,
+        total_score=analysis.score,
+        bucket=analysis.bucket,
+        hard_blockers=analysis.hard_blockers,
+        trigger_price=trigger_price,
+        stop_loss=stop_price,
+        target_1=target_1,
+        target_2=target_2,
+        risk_reward=rr,
+        weekly_note=weekly_note,
+        invalidation_rule=invalidation_rule,
+        reasons=analysis.reasons,
+        blockers=analysis.blockers,
+        metrics=analysis.metrics,
+        ai_explanation=ai_explanation,
     )
 
 

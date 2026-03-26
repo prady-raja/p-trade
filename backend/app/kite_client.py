@@ -136,6 +136,46 @@ def get_nifty_instrument_token() -> int:
     raise ValueError('NIFTY 50 instrument not found in NSE instruments list.')
 
 
+def get_nifty_ohlcv() -> Dict[str, float]:
+    """Fetch Nifty 50 latest price and EMAs for market regime detection."""
+    from datetime import timedelta
+    token = get_nifty_instrument_token()
+    to_dt = datetime.now()
+    from_dt = to_dt - timedelta(days=400)
+    candles = get_historical_candles(token, from_dt, to_dt, 'day')
+    if not candles:
+        raise ValueError('No Nifty historical data returned')
+    closes = [float(c['close']) for c in candles]
+    price = closes[-1]
+
+    def _ema(prices: List[float], period: int) -> float:
+        if len(prices) < period:
+            return prices[-1]
+        k = 2.0 / (period + 1)
+        val = sum(prices[:period]) / period
+        for p in prices[period:]:
+            val = p * k + val * (1.0 - k)
+        return val
+
+    return {
+        'price': round(price, 2),
+        'ema50': round(_ema(closes, 50), 2),
+        'ema200': round(_ema(closes, 200), 2),
+    }
+
+
+def resolve_company_name(tradingsymbol: str, exchange: str = 'NSE') -> Optional[str]:
+    """Return the human-readable company name for a tradingsymbol, or None on failure."""
+    try:
+        sym = tradingsymbol.upper().strip()
+        for inst in get_instruments(exchange):
+            if inst['tradingsymbol'] == sym and inst['exchange'] == exchange:
+                return inst.get('name') or None
+    except Exception:
+        pass
+    return None
+
+
 def get_profile() -> Dict[str, Any]:
     kite = create_kite_client()
     return kite.profile()
