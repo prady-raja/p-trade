@@ -15,6 +15,7 @@ button, input, textarea { font: inherit; }
 .hero p { max-width: 760px; margin: 0; color: var(--muted); line-height: 1.7; }
 .eyebrow { font-size: 12px; text-transform: uppercase; letter-spacing: 1.2px; color: #8fb3ff; font-weight: 700; }
 .hero-actions { display: flex; gap: 12px; flex-wrap: wrap; }
+.feedback-row { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
 .top-grid,.bottom-grid,.three-col { display: grid; gap: 16px; margin-bottom: 16px; }
 .top-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .bottom-grid { grid-template-columns: 0.9fr 1.1fr; }
