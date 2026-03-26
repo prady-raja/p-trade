@@ -417,6 +417,67 @@ class TestMarketRegimeEndpoint:
 
 
 @pytest.mark.skipif(not APP_IMPORTABLE, reason="App not importable")
+class TestMarketCurrentEndpoint:
+    """
+    Phase 1A — /market/current must be honest and real-data-backed.
+    No synthetic green fallback. On Kite failure: regime='unset', note=error.
+    """
+
+    def test_unset_returned_when_kite_not_connected(self):
+        """When Kite raises (not connected), /market/current must return regime='unset'."""
+        with patch("app.kite_client.get_nifty_ohlcv") as mock_kite:
+            mock_kite.side_effect = ValueError("Kite is not connected yet. Complete the login flow first.")
+            response = client.get("/market/current")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["regime"] == "unset", (
+            f"Expected 'unset' when Kite is not connected, got '{data['regime']}'"
+        )
+        assert data.get("note"), "note must contain the real error message"
+
+    def test_no_synthetic_green_when_kite_fails(self):
+        """On Kite failure, regime must NOT be 'green' (no fake fallback)."""
+        with patch("app.kite_client.get_nifty_ohlcv") as mock_kite:
+            mock_kite.side_effect = Exception("Connection refused")
+            response = client.get("/market/current")
+        data = response.json()
+        assert data["regime"] != "green", (
+            "regime must not be 'green' when real data is unavailable — no synthetic fallback allowed"
+        )
+
+    def test_green_regime_when_fully_bullish(self):
+        """price > EMA50 > EMA200 must yield regime='green'."""
+        with patch("app.kite_client.get_nifty_ohlcv") as mock_kite:
+            mock_kite.return_value = {"price": 22000.0, "ema50": 21500.0, "ema200": 20000.0}
+            response = client.get("/market/current")
+        assert response.status_code == 200
+        assert response.json()["regime"] == "green"
+
+    def test_red_regime_when_price_below_ema50(self):
+        """price < EMA50 must yield regime='red'."""
+        with patch("app.kite_client.get_nifty_ohlcv") as mock_kite:
+            mock_kite.return_value = {"price": 20000.0, "ema50": 21500.0, "ema200": 20000.0}
+            response = client.get("/market/current")
+        assert response.json()["regime"] == "red"
+
+    def test_yellow_regime_when_mixed_signals(self):
+        """price > both EMAs but EMA50 < EMA200 (Tide not confirmed) must yield 'yellow'."""
+        with patch("app.kite_client.get_nifty_ohlcv") as mock_kite:
+            # price=22000 > ema50=20000 > but ema50 < ema200=21000 → not green, not red → yellow
+            mock_kite.return_value = {"price": 22000.0, "ema50": 20000.0, "ema200": 21000.0}
+            response = client.get("/market/current")
+        assert response.json()["regime"] == "yellow"
+
+    def test_response_shape_preserved(self):
+        """Frontend expects {regime, note} — shape must not change."""
+        with patch("app.kite_client.get_nifty_ohlcv") as mock_kite:
+            mock_kite.return_value = {"price": 22000.0, "ema50": 21500.0, "ema200": 20000.0}
+            data = client.get("/market/current").json()
+        assert "regime" in data, "response must contain 'regime' field"
+        assert data["regime"] in ("green", "yellow", "red", "unset")
+
+
+@pytest.mark.skipif(not APP_IMPORTABLE, reason="App not importable")
 class TestScreenshotImportEndpoint:
     """
     BUG 1 TESTS — Screenshot import must use the ACTUAL uploaded image.

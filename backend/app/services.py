@@ -20,40 +20,11 @@ class InMemoryStore:
 
 store = InMemoryStore()
 
-SECTOR_MAP = {
-    'POLYCAB': 'Capital Goods',
-    'BSE': 'Financials',
-    'CAMS': 'Financials',
-    'DIXON': 'Consumer Discretionary',
-    'PERSISTENT': 'IT',
-    'ZOMATO': 'Consumer Discretionary',
-    'KEI': 'Capital Goods',
-    'APLAPOLLO': 'Metals',
-}
+SECTOR_MAP: dict = {}  # Phase 1A: cleared — no hardcoded tickers; sector resolved from CSV or Kite
 
 CSV_TICKER_KEYS = ['ticker', 'symbol', 'stock', 'tradingsymbol', 'nse code', 'nsecode', 'code', 'name']
 CSV_NAME_KEYS = ['name', 'company', 'company name', 'company_name', 'stock name']
 CSV_SECTOR_KEYS = ['industry', 'sector', 'industry group']
-
-
-def fake_market_regime() -> MarketState:
-    if store.market.regime != 'unset':
-      return store.market
-
-    store.market = MarketState(regime='green', note='Bullish regime — longs supported.')
-    return store.market
-
-
-def set_market_regime_for_refresh() -> MarketState:
-    cycle = {'unset': 'green', 'green': 'yellow', 'yellow': 'red', 'red': 'green'}
-    note_map = {
-        'green': 'Bullish regime — longs supported.',
-        'yellow': 'Mixed regime — be selective on new entries.',
-        'red': 'Bearish regime — longs at higher risk.',
-    }
-    next_regime = cycle.get(store.market.regime, 'green')
-    store.market = MarketState(regime=next_regime, note=note_map[next_regime])
-    return store.market
 
 
 def _pick_value(row: Dict[str, str], options: List[str]) -> Optional[str]:
@@ -761,33 +732,6 @@ def scan_symbols(symbols: List[str], date: Optional[str] = None) -> List['Scanne
     bucket_order = {'Trade Today': 0, 'Watch Tomorrow': 1, 'Needs Work': 2, 'Reject': 3, 'Error': 4}
     results.sort(key=lambda r: (bucket_order.get(r.bucket or 'Error', 4), -r.total_score))
     return results
-
-
-def analyze_ticker(ticker: str, date: Optional[str] = None) -> AnalyzeResult:
-    normalized = ticker.upper().strip()
-    seed = sum(ord(c) for c in normalized) % 100
-    score = max(8, min(20, 10 + (seed % 9)))
-
-    if score >= 17:
-        verdict = 'STRONG BUY'
-    elif score >= 13:
-        verdict = 'BUY WATCH'
-    elif score >= 9:
-        verdict = 'WAIT'
-    else:
-        verdict = 'REJECT'
-
-    return AnalyzeResult(
-        ticker=normalized,
-        verdict=verdict,
-        score=score,
-        trigger=f'Breakout above trigger level for {normalized}',
-        stop_loss='Structure stop below recent low',
-        target_1='Nearest resistance',
-        target_2='Measured move target',
-        risk_reward='1:3.1',
-        summary=f'Starter analysis for {normalized}. Replace with Kite-based logic later. Date={date or "latest"}.',
-    )
 
 
 def create_trade(
