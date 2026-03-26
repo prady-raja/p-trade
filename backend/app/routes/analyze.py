@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from app.models import AnalyzeTickerRequest, AnalyzeResult, TradeReviewResult
-from app.services import analyze_ticker_with_kite, build_trade_review
+from app.scoring_service import analyze_ticker_with_kite
+from app.review_service import build_trade_review
 
 router = APIRouter(prefix='/analyze', tags=['analyze'])
 

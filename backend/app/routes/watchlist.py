@@ -1,6 +1,6 @@
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from app.services import import_screener_csv, import_screener_screenshot
+from app.import_service import import_screener_csv, import_screener_screenshot
 
 router = APIRouter(prefix='/watchlist', tags=['watchlist'])
 

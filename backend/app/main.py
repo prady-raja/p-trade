@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -10,7 +12,48 @@ from app.routes.trades import router as trades_router
 from app.routes.broker import router as broker_router
 from app.routes.api_compat import router as api_compat_router
 
-app = FastAPI(title=settings.app_name)
+
+@asynccontextmanager
+async def lifespan(app_instance: FastAPI):
+    """
+    Startup: initialise SQLite schema, hydrate in-memory store from DB.
+    Shutdown: nothing needed — SQLite writes happen synchronously on each request.
+    """
+    from app.database import init_db, db_load_all_trades, db_load_market_regime
+    from app.models import MarketState, TradeRecord
+    from app.market_service import store
+
+    init_db()
+
+    # Hydrate trades — newest-first order preserved
+    rows = db_load_all_trades()
+    store.trades = [
+        TradeRecord(
+            id=r['id'],
+            ticker=r['ticker'],
+            entry=r.get('entry'),
+            stop_loss=r.get('stop_loss'),
+            target_1=r.get('target_1'),
+            target_2=r.get('target_2'),
+            note=r.get('note'),
+            status=r.get('status', 'open'),
+            current_price=r.get('current_price'),
+        )
+        for r in rows
+    ]
+
+    # Hydrate last known market regime (only if a real regime was ever saved)
+    regime_row = db_load_market_regime()
+    if regime_row:
+        store.market = MarketState(
+            regime=regime_row['regime'],
+            note=regime_row.get('note') or '',
+        )
+
+    yield  # app runs here
+
+
+app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

@@ -6,7 +6,8 @@ The primary frontend routes (e.g. /market/current, /analyze/review) remain uncha
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from app import kite_client
-from app.services import import_screener_csv, import_screener_screenshot, store
+from app.import_service import import_screener_csv, import_screener_screenshot
+from app.market_service import store
 
 router = APIRouter(prefix='/api', tags=['api-compat'])
 

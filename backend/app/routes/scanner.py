@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from app.models import AiScannerResponse, ScannerRunRequest, ScannerScoreRequest, ScannerScoreResponse
-from app.services import score_shortlist, scan_symbols
+from app.scoring_service import score_shortlist, scan_symbols
 from app.ai_layer import enrich_with_ai
 
 router = APIRouter(prefix='/scanner', tags=['scanner'])
