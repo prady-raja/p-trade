@@ -944,3 +944,193 @@ class TestRegressionGuard:
             print("WARNING — possible /20 score denominator found:\n" + "\n".join(violations))
             # Soft assert — warn but don't fail (context matters)
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 5 — DATABASE PERSISTENCE (SQLAlchemy — SQLite local / Postgres on Render)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestEngineSelection:
+    """
+    Verify that _make_engine() selects the correct backend:
+      - No DATABASE_URL → SQLite engine
+      - DATABASE_URL present → Postgres engine (no real connection required)
+    """
+
+    def test_no_database_url_creates_sqlite_engine(self):
+        """When DATABASE_URL is not set, engine dialect must be sqlite."""
+        import app.database as dbmod
+        orig_url = dbmod.DATABASE_URL
+        try:
+            dbmod.DATABASE_URL = None
+            engine = dbmod._make_engine()
+            assert engine.dialect.name == 'sqlite', (
+                f"Expected sqlite engine when DATABASE_URL is unset, got {engine.dialect.name}"
+            )
+            engine.dispose()
+        finally:
+            dbmod.DATABASE_URL = orig_url
+
+    def test_database_url_creates_postgres_engine(self):
+        """When DATABASE_URL is set, _make_engine must request a Postgres engine."""
+        from unittest.mock import patch, MagicMock
+        import app.database as dbmod
+        orig_url = dbmod.DATABASE_URL
+
+        mock_engine = MagicMock()
+        mock_engine.dialect.name = 'postgresql'
+
+        try:
+            dbmod.DATABASE_URL = 'postgresql://user:pass@localhost/testdb'
+            with patch('app.database.create_engine', return_value=mock_engine) as mock_ce:
+                engine = dbmod._make_engine()
+                call_args = mock_ce.call_args
+                # First positional arg must be the DATABASE_URL
+                assert 'postgresql' in call_args[0][0], (
+                    "create_engine must be called with the DATABASE_URL"
+                )
+                # pool_pre_ping must be True — critical for Supabase idle connections
+                assert call_args[1].get('pool_pre_ping') is True, (
+                    "pool_pre_ping=True is required for Supabase"
+                )
+                assert call_args[1].get('pool_size') == 5
+                assert call_args[1].get('max_overflow') == 10
+        finally:
+            dbmod.DATABASE_URL = orig_url
+
+
+class TestSQLitePersistence:
+    """
+    Verify that the SQLAlchemy persistence layer works correctly on SQLite.
+    Uses a temp DB file (overrides app.database.DB_PATH + DATABASE_URL) so tests
+    are fully isolated from the production ptrade.db and from each other.
+    """
+
+    def setup_method(self):
+        import tempfile
+        import app.database as dbmod
+        self._tmpfile = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        self._orig_db_path = dbmod.DB_PATH
+        self._orig_database_url = dbmod.DATABASE_URL
+        # Force SQLite mode for all persistence tests
+        dbmod.DATABASE_URL = None
+        dbmod.DB_PATH = self._tmpfile.name
+        dbmod.init_db()
+
+    def teardown_method(self):
+        import os
+        import app.database as dbmod
+        dbmod.DB_PATH = self._orig_db_path
+        dbmod.DATABASE_URL = self._orig_database_url
+        # Restore engine to original path so other tests are unaffected
+        try:
+            dbmod.init_db()
+        except Exception:
+            pass
+        try:
+            os.unlink(self._tmpfile.name)
+        except OSError:
+            pass
+
+    def test_init_db_is_idempotent(self):
+        """Calling init_db() twice must not raise or destroy existing data."""
+        import app.database as dbmod
+        dbmod.init_db()   # first call already done in setup_method
+        dbmod.init_db()   # second call — must not raise
+
+    def test_trade_insert_and_reload(self):
+        """A trade inserted via db_insert_trade must survive a db_load_all_trades call."""
+        import uuid
+        import app.database as dbmod
+
+        trade_id = str(uuid.uuid4())
+        dbmod.db_insert_trade({
+            'id': trade_id,
+            'ticker': 'TESTSTOCK',
+            'entry': '1000',
+            'stop_loss': '920',
+            'target_1': '1300',
+            'target_2': '1700',
+            'note': 'sqlalchemy test',
+            'status': 'open',
+        })
+
+        rows = dbmod.db_load_all_trades()
+        ids = [r['id'] for r in rows]
+        assert trade_id in ids, f"Trade {trade_id} not found after db_load_all_trades()"
+        row = next(r for r in rows if r['id'] == trade_id)
+        assert row['ticker'] == 'TESTSTOCK'
+        assert row['status'] == 'open'
+
+    def test_trade_status_update_persists(self):
+        """db_update_trade() must durably change the status field."""
+        import uuid
+        import app.database as dbmod
+
+        trade_id = str(uuid.uuid4())
+        dbmod.db_insert_trade({'id': trade_id, 'ticker': 'UPD', 'status': 'open'})
+
+        dbmod.db_update_trade(trade_id, status='hit_t1')
+
+        rows = dbmod.db_load_all_trades()
+        row = next((r for r in rows if r['id'] == trade_id), None)
+        assert row is not None, "Updated trade not found in DB"
+        assert row['status'] == 'hit_t1', f"Expected 'hit_t1', got '{row['status']}'"
+
+    def test_current_price_update_persists(self):
+        """db_update_trade() must durably persist current_price."""
+        import uuid
+        import app.database as dbmod
+
+        trade_id = str(uuid.uuid4())
+        dbmod.db_insert_trade({'id': trade_id, 'ticker': 'PRICE', 'status': 'open'})
+        dbmod.db_update_trade(trade_id, current_price=4950.0)
+
+        rows = dbmod.db_load_all_trades()
+        row = next(r for r in rows if r['id'] == trade_id)
+        assert row['current_price'] == 4950.0
+
+    def test_market_regime_save_and_load(self):
+        """db_save_market_regime / db_load_market_regime must round-trip correctly."""
+        import app.database as dbmod
+
+        dbmod.db_save_market_regime('green', 'Nifty ₹22000 | EMA50=21500 | EMA200=20000')
+        result = dbmod.db_load_market_regime()
+
+        assert result is not None, "db_load_market_regime returned None after save"
+        assert result['regime'] == 'green'
+        assert 'EMA50' in result['note']
+
+    def test_market_regime_upsert(self):
+        """Saving regime twice must update, not create a duplicate row."""
+        import app.database as dbmod
+
+        dbmod.db_save_market_regime('green', 'note 1')
+        dbmod.db_save_market_regime('red', 'note 2')
+
+        result = dbmod.db_load_market_regime()
+        assert result['regime'] == 'red', "Second save must overwrite first"
+
+    def test_load_returns_none_when_no_regime_saved(self):
+        """db_load_market_regime returns None on a fresh DB with no regime row."""
+        import app.database as dbmod
+        result = dbmod.db_load_market_regime()
+        assert result is None, "Expected None on fresh DB"
+
+    def test_restart_persistence(self):
+        """Reinitialising the DB session must not lose previously inserted trades."""
+        import uuid
+        import app.database as dbmod
+
+        trade_id = str(uuid.uuid4())
+        dbmod.db_insert_trade({
+            'id': trade_id,
+            'ticker': 'RESTART',
+            'status': 'open',
+        })
+
+        # Simulate restart: recreate engine (same DB file)
+        dbmod.init_db()
+
+        rows = dbmod.db_load_all_trades()
+        ids = [r['id'] for r in rows]
+        assert trade_id in ids, "Trade lost after simulated restart (init_db re-call)"

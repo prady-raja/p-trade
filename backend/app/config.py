@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
 
+    # DB: config — database connection settings
+    database_url: Optional[str] = None   # Supabase/Postgres on Render: set DATABASE_URL
+    database_path: str = 'ptrade.db'     # local SQLite path (used when DATABASE_URL is absent)
+
     def origins_list(self) -> List[str]:
         return [x.strip() for x in self.allowed_origins.split(',') if x.strip()]
 
