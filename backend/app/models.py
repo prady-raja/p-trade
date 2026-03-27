@@ -130,6 +130,8 @@ class TradeCreateRequest(BaseModel):
     gates_passed: Optional[List[str]] = None
     gate_failed: Optional[str] = None
     verdict: Optional[str] = None
+    market_regime: Optional[str] = None
+    snapshot_id: Optional[str] = None
 
 
 class TradeRecord(BaseModel):
@@ -149,6 +151,8 @@ class TradeRecord(BaseModel):
     gates_passed: Optional[List[str]] = None
     gate_failed: Optional[str] = None
     verdict: Optional[str] = None
+    market_regime: Optional[str] = None
+    snapshot_id: Optional[str] = None
 
 
 class ScannerScoreRequest(BaseModel):
@@ -224,6 +228,7 @@ class TradeReviewResult(BaseModel):
     opt_breakdown: Optional[OptBreakdown] = None
     verdict: Optional[str] = None     # 'STRONG BUY' | 'BUY WATCH' | 'WAIT' | 'AVOID'
     tradeable: bool = False
+    snapshot_id: Optional[str] = None
 
 
 class KiteLoginUrlResponse(BaseModel):

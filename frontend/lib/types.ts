@@ -95,6 +95,28 @@ export type TradeReviewResult = {
   opt_breakdown?: OptBreakdown;
   verdict?: Verdict;
   tradeable: boolean;
+  // Snapshot (Part 1)
+  snapshot_id?: string | null;
+};
+
+export type TradeRecord = {
+  id: string;
+  ticker: string;
+  entry: string | null;
+  stop_loss: string | null;
+  target_1: string | null;
+  target_2: string | null;
+  note: string | null;
+  status: string;
+  exit_price: number | null;
+  current_price: number | null;
+  hvs_score: number | null;
+  opt_score: number | null;
+  verdict: string | null;
+  gates_passed: string[] | null;
+  gate_failed: string | null;
+  market_regime: string | null;
+  snapshot_id?: string | null;
 };
 
 export type KiteStatus = {

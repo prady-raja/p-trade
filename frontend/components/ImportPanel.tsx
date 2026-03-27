@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { SectionCard } from './SectionCard';
 
 type Props = {
@@ -11,40 +11,52 @@ type Props = {
 export function ImportPanel({ onImportCsv, onImportScreenshot }: Props) {
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [screenshotFile, setScreenshotFile] = useState<File | null>(null);
+  const csvRef = useRef<HTMLInputElement>(null);
+  const screenshotRef = useRef<HTMLInputElement>(null);
 
   return (
-    <SectionCard title="2. Import Screener Data">
+    <SectionCard title="2. Import Watchlist">
       <div className="stack">
-        <label>
-          <span>CSV upload</span>
+        {/* CSV upload zone */}
+        <div className="upload-zone" onClick={() => csvRef.current?.click()}>
           <input
+            ref={csvRef}
             type="file"
             accept=".csv,text/csv"
+            style={{ display: 'none' }}
             onChange={(e) => setCsvFile(e.target.files?.[0] || null)}
           />
-        </label>
+          <div className="upload-zone-label">Screener.in CSV</div>
+          <div style={{ fontSize: 20, margin: '4px 0' }}>↑</div>
+          {csvFile && <div className="upload-zone-filename">{csvFile.name}</div>}
+        </div>
         <button
           className="btn btn-primary"
           onClick={() => csvFile && onImportCsv(csvFile)}
           disabled={!csvFile}
         >
-          Import CSV
+          Import
         </button>
 
-        <label>
-          <span>Screenshot upload</span>
+        {/* Screenshot upload zone */}
+        <div className="upload-zone" onClick={() => screenshotRef.current?.click()}>
           <input
+            ref={screenshotRef}
             type="file"
             accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+            style={{ display: 'none' }}
             onChange={(e) => setScreenshotFile(e.target.files?.[0] || null)}
           />
-        </label>
+          <div className="upload-zone-label">Screener.in Screenshot</div>
+          <div style={{ fontSize: 20, margin: '4px 0' }}>↑</div>
+          {screenshotFile && <div className="upload-zone-filename">{screenshotFile.name}</div>}
+        </div>
         <button
           className="btn btn-secondary"
           onClick={() => screenshotFile && onImportScreenshot(screenshotFile)}
           disabled={!screenshotFile}
         >
-          Import Screenshot
+          Import
         </button>
       </div>
     </SectionCard>

@@ -85,6 +85,9 @@ def build_trade_review(ticker: str, date: Optional[str] = None) -> 'TradeReviewR
     # AI explanation — single-item batch, graceful fallback
     # -------------------------------------------------------------------------
     ai_explanation: Optional[str] = None
+    ai_bucket_for_snapshot: Optional[str] = None
+    ai_cautions_for_snapshot: Optional[list] = None
+    ai_available_for_snapshot: bool = False
     try:
         from .ai_layer import enrich_with_ai
         scan_item = ScannerResultItem(
@@ -104,13 +107,17 @@ def build_trade_review(ticker: str, date: Optional[str] = None) -> 'TradeReviewR
         )
         ai_response = enrich_with_ai([scan_item])
         if ai_response.ai_available and ai_response.results:
-            ai_explanation = ai_response.results[0].ai_explanation or None
+            ai_item = ai_response.results[0]
+            ai_explanation = ai_item.ai_explanation or None
+            ai_bucket_for_snapshot = ai_item.ai_bucket
+            ai_cautions_for_snapshot = ai_item.cautions
+            ai_available_for_snapshot = True
     except Exception:
         pass
 
     market_regime = store.market.regime if store.market.regime != 'unset' else None
 
-    return TradeReviewResult(
+    result = TradeReviewResult(
         symbol=analysis.ticker,
         company_name=company_name,
         market_regime=market_regime,
@@ -139,3 +146,22 @@ def build_trade_review(ticker: str, date: Optional[str] = None) -> 'TradeReviewR
         verdict=analysis.verdict,
         tradeable=analysis.tradeable,
     )
+
+    # -------------------------------------------------------------------------
+    # Decision snapshot — silent, never surfaces to caller
+    # -------------------------------------------------------------------------
+    try:
+        from . import snapshot_service
+        snapshot_id = snapshot_service.write_review_snapshot(
+            result,
+            analysis_date=date,
+            ai_available=ai_available_for_snapshot,
+            ai_bucket=ai_bucket_for_snapshot,
+            ai_explanation=ai_explanation,
+            ai_cautions=ai_cautions_for_snapshot,
+        )
+        result.snapshot_id = snapshot_id
+    except Exception:
+        pass
+
+    return result

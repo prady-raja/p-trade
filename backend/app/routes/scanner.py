@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import APIRouter, HTTPException
 
 from app.models import AiScannerResponse, ScannerRunRequest, ScannerScoreRequest, ScannerScoreResponse
@@ -27,6 +29,14 @@ def score_symbols_route(payload: ScannerScoreRequest) -> ScannerScoreResponse:
         raise HTTPException(status_code=400, detail='Maximum 20 symbols per scan request.')
     try:
         results = scan_symbols(payload.symbols, payload.date)
+        # Write scan snapshots — silent, never affects response
+        try:
+            from app import snapshot_service
+            scan_run_id = str(uuid.uuid4())
+            for result in results:
+                snapshot_service.write_scan_snapshot(result, scan_run_id, payload.date)
+        except Exception:
+            pass
         return ScannerScoreResponse(count=len(results), results=results)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -47,7 +57,26 @@ def analyze_with_ai(payload: ScannerScoreRequest) -> AiScannerResponse:
         raise HTTPException(status_code=400, detail='Maximum 20 symbols per request.')
     try:
         scored = scan_symbols(payload.symbols, payload.date)
-        return enrich_with_ai(scored)
+        ai_response = enrich_with_ai(scored)
+        # Write scan snapshots with AI fields — silent, never affects response
+        try:
+            from app import snapshot_service
+            scan_run_id = str(uuid.uuid4())
+            ai_lookup = {r.ticker: r for r in ai_response.results}
+            for result in scored:
+                ai_item = ai_lookup.get(result.ticker)
+                snapshot_service.write_scan_snapshot(
+                    result,
+                    scan_run_id,
+                    payload.date,
+                    ai_available=bool(ai_response.ai_available and ai_item and ai_item.ai_available),
+                    ai_bucket=ai_item.ai_bucket if ai_item else None,
+                    ai_explanation=ai_item.ai_explanation if ai_item else None,
+                    ai_cautions=list(ai_item.cautions) if ai_item else None,
+                )
+        except Exception:
+            pass
+        return ai_response
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:

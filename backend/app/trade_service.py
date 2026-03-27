@@ -9,6 +9,12 @@ Extracted from services.py. Owns:
 PART B: create_trade now accepts the new framework fields (hvs_score, opt_score,
 gates_passed, gate_failed, verdict) as optional kwargs so they are persisted to
 the trades table. All are optional for backward compatibility.
+
+PART H: create_trade now accepts market_regime so the regime at time of logging
+is persisted alongside the trade.
+
+PART 1 (snapshots): create_trade now accepts snapshot_id so the linked snapshot
+is persisted alongside the trade.
 """
 
 import uuid
@@ -31,6 +37,8 @@ def create_trade(
     gates_passed: Optional[List[str]] = None,
     gate_failed: Optional[str] = None,
     verdict: Optional[str] = None,
+    market_regime: Optional[str] = None,
+    snapshot_id: Optional[str] = None,
 ) -> TradeRecord:
     trade = TradeRecord(
         id=str(uuid.uuid4()),
@@ -46,6 +54,8 @@ def create_trade(
         gates_passed=gates_passed,
         gate_failed=gate_failed,
         verdict=verdict,
+        market_regime=market_regime,
+        snapshot_id=snapshot_id,
     )
     # DB: trade persistence — persist to SQLAlchemy-backed store first
     db_insert_trade(trade.model_dump())

@@ -21,7 +21,18 @@ def create_trade_route(payload: TradeCreateRequest) -> dict:
         gates_passed=payload.gates_passed,
         gate_failed=payload.gate_failed,
         verdict=payload.verdict,
+        market_regime=payload.market_regime,
+        snapshot_id=payload.snapshot_id,
     )
+    # Link existing snapshot or write a fallback trade_logged snapshot — silent
+    try:
+        from app import snapshot_service
+        if payload.snapshot_id:
+            snapshot_service.link_trade_to_snapshot(payload.snapshot_id, trade.id)
+        else:
+            snapshot_service.write_trade_logged_snapshot(payload, trade.id)
+    except Exception:
+        pass
     return trade.model_dump()
 
 

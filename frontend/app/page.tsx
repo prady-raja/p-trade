@@ -4,7 +4,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { BrokerConnectionCard } from '../components/BrokerConnectionCard';
 import { BucketColumns } from '../components/BucketColumns';
 import { ImportPanel } from '../components/ImportPanel';
+import { JournalSection } from '../components/JournalSection';
 import { MarketRegimeCard } from '../components/MarketRegimeCard';
+import { Pill } from '../components/Pill';
 import { PreviewList } from '../components/PreviewList';
 import { SectionCard } from '../components/SectionCard';
 import { WinnerDetail } from '../components/WinnerDetail';
@@ -13,6 +15,7 @@ import type {
   CachedMarket,
   KiteStatus,
   MarketRegime,
+  TradeRecord,
   TradeReviewResult,
   WatchlistItem,
 } from '../lib/types';
@@ -25,6 +28,7 @@ export default function Page() {
   const [marketLoading, setMarketLoading] = useState(false);
   const [marketError, setMarketError] = useState('');
   const [marketCachedAt, setMarketCachedAt] = useState<number | null>(null);
+  const [marketUpdatedAt, setMarketUpdatedAt] = useState<Date | null>(null);
 
   // Import preview (Phase 1) vs scored watchlist (Phase 2)
   const [importedItems, setImportedItems] = useState<WatchlistItem[]>([]);
@@ -46,10 +50,44 @@ export default function Page() {
   const [kiteStatus, setKiteStatus] = useState<KiteStatus | null>(null);
   const [kiteLoading, setKiteLoading] = useState('');
 
+  // Journal
+  const [trades, setTrades] = useState<TradeRecord[]>([]);
+
+  // Position sizing capital
+  const [capital, setCapital] = useState<number>(0);
+
+  // Derived
+  const openCount = trades.filter((t) => t.status === 'open').length;
+
   useEffect(() => {
     fetchKiteStatus();
     fetchMarketRegime();
+    fetchTrades();
+    const saved = localStorage.getItem('p_trade_capital');
+    if (saved) setCapital(parseFloat(saved) || 0);
   }, []);
+
+  // ---------------------------------------------------------------------------
+  // Capital
+  // ---------------------------------------------------------------------------
+
+  function handleCapitalChange(n: number) {
+    setCapital(n);
+    localStorage.setItem('p_trade_capital', String(n));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Trades / Journal
+  // ---------------------------------------------------------------------------
+
+  async function fetchTrades() {
+    try {
+      const data = await api<{ items: TradeRecord[] }>('/trades');
+      setTrades(data.items || []);
+    } catch {
+      // silently ignore — journal stays empty until backend is reachable
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Market regime
@@ -62,6 +100,7 @@ export default function Page() {
     try {
       const data = await api<{ regime: MarketRegime; note?: string }>('/market/current');
       setMarket(data);
+      setMarketUpdatedAt(new Date());
       const cache: CachedMarket = { ...data, cachedAt: Date.now() };
       localStorage.setItem(MARKET_CACHE_KEY, JSON.stringify(cache));
     } catch (e) {
@@ -159,7 +198,7 @@ export default function Page() {
       setImportedItems(data.items || []);
       setWatchlist([]);
       setStatus(
-        `Phase 1 — ${data.items?.length || 0} names imported from CSV. Review then click "Run Shortlist Scoring".`
+        `${data.items?.length || 0} names imported. Review below then click "Run Scoring".`
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to import CSV');
@@ -181,7 +220,7 @@ export default function Page() {
       setImportedItems(data.items || []);
       setWatchlist([]);
       setStatus(
-        `Phase 1 — ${data.items?.length || 0} names extracted from screenshot. Review then click "Run Shortlist Scoring".`
+        `${data.items?.length || 0} names extracted from screenshot. Review below then click "Run Scoring".`
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to import screenshot');
@@ -215,7 +254,7 @@ export default function Page() {
   async function runShortlistScoring() {
     const itemsToScore = importedItems.length > 0 ? importedItems : watchlist;
     try {
-      setLoading('Scoring shortlist with backend logic...');
+      setLoading('Scoring watchlist with backend logic...');
       setError('');
       const data = await api<{ items: WatchlistItem[] }>('/scanner/run', {
         method: 'POST',
@@ -224,9 +263,9 @@ export default function Page() {
       });
       setWatchlist(data.items || []);
       setImportedItems([]);
-      setStatus('Phase 2 — Shortlist scored. Trade Today / Watch Tomorrow / Reject populated below.');
+      setStatus('Watchlist scored. Results in buckets below.');
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to score shortlist');
+      setError(e instanceof Error ? e.message : 'Failed to score watchlist');
     } finally {
       setLoading('');
     }
@@ -273,7 +312,7 @@ export default function Page() {
           target_1: analysis.target_1 != null ? String(analysis.target_1) : undefined,
           target_2: analysis.target_2 != null ? String(analysis.target_2) : undefined,
           note: tradeNote,
-          // New framework fields — passed through to trades table
+          // New framework fields
           hvs_score: analysis.hvs_score ?? undefined,
           opt_score: analysis.opt_score ?? undefined,
           gates_passed: analysis.gates
@@ -281,10 +320,15 @@ export default function Page() {
             .map((g) => g.name),
           gate_failed: analysis.gates?.find((g) => g.status === 'failed')?.name ?? undefined,
           verdict: analysis.verdict ?? undefined,
+          // Market regime at time of logging
+          market_regime: market.regime !== 'unset' ? market.regime : undefined,
+          // Snapshot link (Part 1)
+          snapshot_id: analysis.snapshot_id ?? undefined,
         }),
       });
       setTradeNote('');
       setStatus(`${analysis.symbol} trade logged.`);
+      fetchTrades();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to log trade');
     } finally {
@@ -305,13 +349,25 @@ export default function Page() {
         }),
       ]);
       setMarket(marketData);
+      setMarketUpdatedAt(new Date());
       setWatchlist(scanData.items || []);
-      setStatus('Next-day refresh complete.');
+      setStatus('Sync complete.');
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to refresh next-day state');
+      setError(e instanceof Error ? e.message : 'Failed to sync watchlist');
     } finally {
       setLoading('');
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Regime pill helper
+  // ---------------------------------------------------------------------------
+
+  function regimePillTone(r: MarketRegime): 'green' | 'yellow' | 'red' | 'slate' {
+    if (r === 'green')  return 'green';
+    if (r === 'yellow') return 'yellow';
+    if (r === 'red')    return 'red';
+    return 'slate';
   }
 
   // ---------------------------------------------------------------------------
@@ -320,13 +376,49 @@ export default function Page() {
 
   return (
     <main className="page-shell">
+
+      {/* ── Sticky top bar ── */}
+      <div className="top-bar">
+        <span className="top-bar-logo">P Trade</span>
+        <Pill
+          label={market.regime === 'unset' ? '—' : market.regime.toUpperCase()}
+          tone={regimePillTone(market.regime)}
+        />
+        <Pill
+          label={kiteStatus?.connected ? 'Kite Connected' : 'Kite Disconnected'}
+          tone={kiteStatus?.connected ? 'green' : 'red'}
+        />
+        <Pill label={`${openCount} open`} tone="slate" />
+      </div>
+
+      {/* ── Regime strip (hidden when unset) ── */}
+      {market.regime !== 'unset' ? (
+        <div className={`regime-strip regime-strip-${market.regime}`}>
+          <div style={{ display: 'flex', alignItems: 'center' }}>
+            <span className={`regime-dot regime-dot-${market.regime}`} />
+            <strong>{market.regime.toUpperCase()}</strong>
+            {market.note && (
+              <span style={{ marginLeft: 12, fontWeight: 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 500 }}>
+                {market.note}
+              </span>
+            )}
+          </div>
+          <span style={{ fontSize: 12, fontWeight: 400, flexShrink: 0 }}>
+            {marketUpdatedAt
+              ? `Updated at ${marketUpdatedAt.toLocaleTimeString()}`
+              : 'Updated just now'}
+          </span>
+        </div>
+      ) : (
+        <div className="regime-spacer" />
+      )}
+
+      {/* ── Hero ── */}
       <div className="hero">
         <div>
-          <div className="eyebrow">P Trade V1</div>
-          <h1>Import → Score → Trade Today / Watch Tomorrow</h1>
-          <p>
-            PTS-based screener workflow: import names, score shortlist, review winners, log trades.
-          </p>
+          <div className="eyebrow">P Trade · PTS Methodology</div>
+          <h1>PTS Workspace</h1>
+          <p>Import your watchlist · Score setups · Review and log trades</p>
         </div>
         <div className="hero-actions">
           <button
@@ -337,7 +429,7 @@ export default function Page() {
             Refresh Market
           </button>
           <button className="btn btn-secondary" onClick={refreshNextDay}>
-            Next-Day Refresh
+            Sync Watchlist
           </button>
         </div>
       </div>
@@ -351,6 +443,16 @@ export default function Page() {
         </div>
       )}
 
+      {/* 1. Market Regime */}
+      <MarketRegimeCard
+        market={market}
+        marketLoading={marketLoading}
+        marketError={marketError}
+        marketCachedAt={marketCachedAt}
+        onFetchMarketRegime={fetchMarketRegime}
+      />
+
+      {/* 2. Broker Connection */}
       <BrokerConnectionCard
         kiteStatus={kiteStatus}
         kiteLoading={kiteLoading}
@@ -359,46 +461,40 @@ export default function Page() {
         onLogout={logoutKite}
       />
 
-      <div className="top-grid">
-        <MarketRegimeCard
-          market={market}
-          marketLoading={marketLoading}
-          marketError={marketError}
-          marketCachedAt={marketCachedAt}
-          onFetchMarketRegime={fetchMarketRegime}
-        />
+      {/* 3. Import Watchlist */}
+      <ImportPanel
+        onImportCsv={importScreenerCsv}
+        onImportScreenshot={importScreenerScreenshot}
+      />
 
-        <ImportPanel
-          onImportCsv={importScreenerCsv}
-          onImportScreenshot={importScreenerScreenshot}
-        />
+      {/* 4. Score Watchlist */}
+      <SectionCard title="3. Score Watchlist">
+        <div className="stack">
+          <p className="muted">
+            {importedItems.length > 0
+              ? `${importedItems.length} names ready in preview. Click to classify into buckets.`
+              : watchlist.length > 0
+              ? `${watchlist.length} scored names in buckets below. Re-import to start a new session.`
+              : 'Import names first (CSV or screenshot), then run scoring.'}
+          </p>
+          <button
+            className="btn btn-primary"
+            onClick={runShortlistScoring}
+            disabled={importedItems.length === 0 && watchlist.length === 0}
+          >
+            Run Scoring
+          </button>
+        </div>
+      </SectionCard>
 
-        <SectionCard title="3. Score Shortlist">
-          <div className="stack">
-            <p className="muted">
-              {importedItems.length > 0
-                ? `${importedItems.length} names ready in preview. Click to classify into buckets.`
-                : watchlist.length > 0
-                ? `${watchlist.length} scored names in buckets below. Re-import to start a new session.`
-                : 'Import names first (CSV or screenshot), then run scoring.'}
-            </p>
-            <button
-              className="btn btn-primary"
-              onClick={runShortlistScoring}
-              disabled={importedItems.length === 0 && watchlist.length === 0}
-            >
-              Run Shortlist Scoring
-            </button>
-          </div>
-        </SectionCard>
-      </div>
-
+      {/* 5. Preview */}
       <PreviewList
         importedItems={importedItems}
         watchlist={watchlist}
         onRemove={removeImportedItem}
       />
 
+      {/* 6. Bucket columns */}
       <BucketColumns
         tradeToday={tradeToday}
         watchTomorrow={watchTomorrow}
@@ -406,38 +502,45 @@ export default function Page() {
         onAnalyzeTicker={analyzeTicker}
       />
 
-      <div className="bottom-grid">
-        <SectionCard title="4. Manual Analyze by Ticker">
-          <div className="form-grid">
-            <label>
-              <span>Ticker</span>
-              <input
-                value={ticker}
-                onChange={(e) => setTicker(e.target.value.toUpperCase())}
-                placeholder="e.g. POLYCAB"
-              />
-            </label>
-            <label>
-              <span>Date (optional)</span>
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-            </label>
-          </div>
-          <button
-            className="btn btn-primary"
-            onClick={() => analyzeTicker()}
-            disabled={!ticker && !selectedTicker}
-          >
-            Analyze
-          </button>
-        </SectionCard>
+      {/* 7. Analyze Ticker */}
+      <SectionCard title="4. Analyze Ticker">
+        <div className="form-grid">
+          <label>
+            <span>Ticker</span>
+            <input
+              value={ticker}
+              onChange={(e) => setTicker(e.target.value.toUpperCase())}
+              placeholder="e.g. POLYCAB"
+            />
+          </label>
+          <label>
+            <span>Date (optional)</span>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          </label>
+        </div>
+        <button
+          className="btn btn-primary"
+          onClick={() => analyzeTicker()}
+          disabled={!ticker && !selectedTicker}
+        >
+          Analyze
+        </button>
+      </SectionCard>
 
-        <WinnerDetail
-          analysis={analysis}
-          tradeNote={tradeNote}
-          onTradeNoteChange={setTradeNote}
-          onLogTrade={logTrade}
-        />
-      </div>
+      {/* 8. Trade Review */}
+      <WinnerDetail
+        analysis={analysis}
+        tradeNote={tradeNote}
+        onTradeNoteChange={setTradeNote}
+        onLogTrade={logTrade}
+        capital={capital}
+        onCapitalChange={handleCapitalChange}
+        marketRegime={market.regime}
+      />
+
+      {/* Journal */}
+      <JournalSection trades={trades} onRefresh={fetchTrades} />
+
     </main>
   );
 }

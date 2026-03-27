@@ -17,6 +17,8 @@ Public API (identical to Phase 1B):
   db_load_all_trades()    — return all rows ordered by created_at DESC
   db_save_market_regime() — upsert the single regime row (only for resolved regimes)
   db_load_market_regime() — return the last persisted regime, or None
+  db_insert_snapshot()    — write an immutable decision snapshot row
+  db_link_trade_to_snapshot() — set trade_id on an existing snapshot row
 
 PART B additions (schema migration):
   Four new columns added to `trades` table:
@@ -110,6 +112,46 @@ CREATE TABLE IF NOT EXISTS market_regime (
 )
 """
 
+_CREATE_DECISION_SNAPSHOTS = """
+CREATE TABLE IF NOT EXISTS decision_snapshots (
+    id                     TEXT PRIMARY KEY,
+    ticker                 TEXT NOT NULL,
+    event_type             TEXT NOT NULL,
+    analysis_timestamp     TEXT NOT NULL,
+    analysis_date          TEXT,
+    market_regime          TEXT,
+    price                  REAL,
+    raw_metrics            TEXT,
+    score_breakdown        TEXT,
+    hvs_score              INTEGER,
+    hvs_breakdown          TEXT,
+    opt_score              INTEGER,
+    opt_breakdown          TEXT,
+    gates                  TEXT,
+    hard_blockers          TEXT,
+    verdict                TEXT,
+    tradeable              INTEGER,
+    reasons                TEXT,
+    blockers               TEXT,
+    trigger_price          REAL,
+    stop_loss              REAL,
+    target_1               REAL,
+    target_2               REAL,
+    risk_reward            REAL,
+    weekly_note            TEXT,
+    invalidation_rule      TEXT,
+    ai_available           INTEGER NOT NULL DEFAULT 0,
+    ai_bucket              TEXT,
+    ai_explanation         TEXT,
+    ai_cautions            TEXT,
+    methodology_version    TEXT,
+    scoring_engine_version TEXT,
+    trade_id               TEXT,
+    scan_run_id            TEXT,
+    created_at             TEXT NOT NULL
+)
+"""
+
 # New columns added in PART B — added via ALTER TABLE in _migrate_trades_schema()
 _NEW_TRADE_COLUMNS: List[str] = [
     'ALTER TABLE trades ADD COLUMN hvs_score   INTEGER',
@@ -117,6 +159,7 @@ _NEW_TRADE_COLUMNS: List[str] = [
     'ALTER TABLE trades ADD COLUMN gates_passed TEXT',
     'ALTER TABLE trades ADD COLUMN gate_failed  TEXT',
     'ALTER TABLE trades ADD COLUMN verdict      TEXT',
+    'ALTER TABLE trades ADD COLUMN snapshot_id  TEXT',
 ]
 
 
@@ -157,6 +200,14 @@ def _migrate_trades_schema(conn: Connection) -> None:
             pass  # Column already exists — safe to ignore
 
 
+def _migrate_snapshots_schema(conn: Connection) -> None:
+    """
+    Placeholder for future snapshot schema migrations.
+    Called inside init_db() after CREATE TABLE decision_snapshots.
+    """
+    pass  # No additional columns to migrate yet
+
+
 def init_db() -> None:
     """
     DB: config
@@ -170,7 +221,9 @@ def init_db() -> None:
     with _engine.begin() as conn:
         conn.execute(text(_CREATE_TRADES))
         conn.execute(text(_CREATE_MARKET_REGIME))
+        conn.execute(text(_CREATE_DECISION_SNAPSHOTS))
         _migrate_trades_schema(conn)
+        _migrate_snapshots_schema(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -186,12 +239,14 @@ def _upsert_trade_sql(dialect_name: str) -> str:
              bucket, score, score_breakdown, exit_price, current_price,
              qty, capital, market_regime,
              hvs_score, opt_score, gates_passed, gate_failed, verdict,
+             snapshot_id,
              created_at, updated_at)
         VALUES
             (:id, :ticker, :entry, :stop_loss, :target_1, :target_2, :note, :status,
              :bucket, :score, :score_breakdown, :exit_price, :current_price,
              :qty, :capital, :market_regime,
              :hvs_score, :opt_score, :gates_passed, :gate_failed, :verdict,
+             :snapshot_id,
              :created_at, :updated_at)
         ON CONFLICT (id) DO UPDATE SET
             ticker          = EXCLUDED.ticker,
@@ -214,6 +269,7 @@ def _upsert_trade_sql(dialect_name: str) -> str:
             gates_passed    = EXCLUDED.gates_passed,
             gate_failed     = EXCLUDED.gate_failed,
             verdict         = EXCLUDED.verdict,
+            snapshot_id     = EXCLUDED.snapshot_id,
             updated_at      = EXCLUDED.updated_at
         """
     # SQLite
@@ -223,12 +279,14 @@ def _upsert_trade_sql(dialect_name: str) -> str:
          bucket, score, score_breakdown, exit_price, current_price,
          qty, capital, market_regime,
          hvs_score, opt_score, gates_passed, gate_failed, verdict,
+         snapshot_id,
          created_at, updated_at)
     VALUES
         (:id, :ticker, :entry, :stop_loss, :target_1, :target_2, :note, :status,
          :bucket, :score, :score_breakdown, :exit_price, :current_price,
          :qty, :capital, :market_regime,
          :hvs_score, :opt_score, :gates_passed, :gate_failed, :verdict,
+         :snapshot_id,
          :created_at, :updated_at)
     """
 
@@ -270,6 +328,7 @@ def db_insert_trade(trade: Dict) -> None:
                 ),
                 'gate_failed':    trade.get('gate_failed'),
                 'verdict':        trade.get('verdict'),
+                'snapshot_id':    trade.get('snapshot_id'),
                 'created_at':     trade.get('created_at') or _now(),
                 'updated_at':     _now(),
             },
@@ -314,6 +373,49 @@ def db_load_all_trades() -> List[Dict]:
     with get_db() as conn:
         result = conn.execute(text('SELECT * FROM trades ORDER BY created_at DESC'))
         return [dict(row) for row in result.mappings().all()]
+
+
+# ---------------------------------------------------------------------------
+# DB: snapshot persistence
+# ---------------------------------------------------------------------------
+
+def db_insert_snapshot(snapshot: Dict) -> None:
+    """DB: snapshot persistence — insert an immutable decision snapshot row."""
+    assert _engine is not None
+    sql = """
+    INSERT INTO decision_snapshots (
+        id, ticker, event_type, analysis_timestamp, analysis_date,
+        market_regime, price, raw_metrics, score_breakdown,
+        hvs_score, hvs_breakdown, opt_score, opt_breakdown,
+        gates, hard_blockers, verdict, tradeable, reasons, blockers,
+        trigger_price, stop_loss, target_1, target_2, risk_reward,
+        weekly_note, invalidation_rule,
+        ai_available, ai_bucket, ai_explanation, ai_cautions,
+        methodology_version, scoring_engine_version,
+        trade_id, scan_run_id, created_at
+    ) VALUES (
+        :id, :ticker, :event_type, :analysis_timestamp, :analysis_date,
+        :market_regime, :price, :raw_metrics, :score_breakdown,
+        :hvs_score, :hvs_breakdown, :opt_score, :opt_breakdown,
+        :gates, :hard_blockers, :verdict, :tradeable, :reasons, :blockers,
+        :trigger_price, :stop_loss, :target_1, :target_2, :risk_reward,
+        :weekly_note, :invalidation_rule,
+        :ai_available, :ai_bucket, :ai_explanation, :ai_cautions,
+        :methodology_version, :scoring_engine_version,
+        :trade_id, :scan_run_id, :created_at
+    )
+    """
+    with get_db() as conn:
+        conn.execute(text(sql), snapshot)
+
+
+def db_link_trade_to_snapshot(snapshot_id: str, trade_id: str) -> None:
+    """DB: snapshot persistence — set trade_id on an existing snapshot row."""
+    with get_db() as conn:
+        conn.execute(
+            text('UPDATE decision_snapshots SET trade_id = :trade_id WHERE id = :snapshot_id'),
+            {'trade_id': trade_id, 'snapshot_id': snapshot_id},
+        )
 
 
 # ---------------------------------------------------------------------------

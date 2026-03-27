@@ -243,7 +243,7 @@ export function ResultGrid({ result }: { result: TradeReviewResult }) {
           <div className="metric-label">Why This Verdict</div>
           <div className="metric-value" style={{ fontSize: 13, lineHeight: 1.8 }}>
             {result.reasons.map((r, i) => (
-              <div key={i}>✓ {r}</div>
+              <div key={i}>· {r}</div>
             ))}
           </div>
         </div>

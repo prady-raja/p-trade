@@ -29,5 +29,9 @@ coverage/
 # macOS
 .DS_Store
 
+# SQLite database files — never commit
+*.db
+ptrade.db
+
 # Git hooks are installed locally, not committed
 # (the scripts/ versions ARE committed as the source of truth)

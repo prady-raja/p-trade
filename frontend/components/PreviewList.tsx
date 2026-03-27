@@ -28,7 +28,7 @@ export function PreviewList({ importedItems, watchlist, onRemove }: Props) {
         <>
           <p className="muted small" style={{ marginBottom: 14 }}>
             Phase 1 — {importedItems.length} names imported. Delete unwanted rows, then click
-            &quot;Run Shortlist Scoring&quot; to classify.
+            &quot;Run Scoring&quot; to classify.
           </p>
           <div className="list-wrap">
             {importedItems.map((item) => (
@@ -64,7 +64,7 @@ export function PreviewList({ importedItems, watchlist, onRemove }: Props) {
           Tomorrow / Reject below.
         </p>
       ) : (
-        <p className="muted">No imported rows yet. Import CSV or screenshot to begin.</p>
+        <p className="muted">No watchlist imported yet. Use Import Watchlist above to begin.</p>
       )}
     </SectionCard>
   );

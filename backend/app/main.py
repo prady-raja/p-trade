@@ -45,6 +45,8 @@ async def lifespan(app_instance: FastAPI):
             gates_passed=json.loads(r['gates_passed']) if r.get('gates_passed') else None,
             gate_failed=r.get('gate_failed'),
             verdict=r.get('verdict'),
+            market_regime=r.get('market_regime'),
+            snapshot_id=r.get('snapshot_id'),
         )
         for r in rows
     ]

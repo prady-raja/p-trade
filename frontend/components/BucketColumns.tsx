@@ -44,86 +44,101 @@ export function BucketColumns({ tradeToday, watchTomorrow, rejected, onAnalyzeTi
     <div className="three-col" style={{ marginTop: 16 }}>
 
       {/* Trade Today — STRONG BUY */}
-      <SectionCard title={`Trade Today (${tradeToday.length})`}>
-        <div className="list-wrap">
-          {tradeToday.length === 0 ? (
-            <p className="muted">No names yet.</p>
-          ) : (
-            tradeToday.map((item) => (
-              <button
-                key={item.id}
-                className="list-card action-card"
-                onClick={() => onAnalyzeTicker(item.ticker)}
-              >
-                <div className="list-card-top">
-                  <strong>{item.ticker}</strong>
-                  <ScoreDisplay item={item} />
-                </div>
-                <div className="muted small">
-                  {item.summary || item.company_name || 'Trade candidate'}
-                </div>
-                {item.trigger && (
-                  <div className="small trigger">{item.trigger}</div>
-                )}
-              </button>
-            ))
-          )}
-        </div>
-      </SectionCard>
+      <div className="col-green">
+        <SectionCard
+          title="Trade Today"
+          right={<Pill label={String(tradeToday.length)} tone="slate" />}
+        >
+          <div className="list-wrap">
+            {tradeToday.length === 0 ? (
+              <p className="muted">No names yet.</p>
+            ) : (
+              tradeToday.map((item) => (
+                <button
+                  key={item.id}
+                  className="list-card action-card"
+                  onClick={() => onAnalyzeTicker(item.ticker)}
+                >
+                  <div className="list-card-top">
+                    <strong>{item.ticker}</strong>
+                    <ScoreDisplay item={item} />
+                  </div>
+                  <div className="muted small">
+                    {item.summary || item.company_name || 'Trade candidate'}
+                  </div>
+                  {item.trigger && (
+                    <div className="small trigger">{item.trigger}</div>
+                  )}
+                </button>
+              ))
+            )}
+          </div>
+        </SectionCard>
+      </div>
 
       {/* Watch Tomorrow — BUY WATCH or WAIT */}
-      <SectionCard title={`Watch Tomorrow (${watchTomorrow.length})`}>
-        <div className="list-wrap">
-          {watchTomorrow.length === 0 ? (
-            <p className="muted">No names yet.</p>
-          ) : (
-            watchTomorrow.map((item) => (
-              <button
-                key={item.id}
-                className="list-card action-card"
-                onClick={() => onAnalyzeTicker(item.ticker)}
-              >
-                <div className="list-card-top">
-                  <strong>{item.ticker}</strong>
-                  <ScoreDisplay item={item} />
-                </div>
-                <div className="muted small">
-                  {item.summary || item.company_name || 'Watch candidate'}
-                </div>
-                {item.verdict === 'BUY WATCH' && item.trigger && (
-                  <div className="small trigger">{item.trigger}</div>
-                )}
-                {item.verdict === 'WAIT' && (
-                  <div className="small muted" style={{ marginTop: 8, fontSize: 12 }}>
-                    Wait — conditions not yet met for entry
+      <div className="col-yellow">
+        <SectionCard
+          title="Watch Tomorrow"
+          right={<Pill label={String(watchTomorrow.length)} tone="slate" />}
+        >
+          <div className="list-wrap">
+            {watchTomorrow.length === 0 ? (
+              <p className="muted">No names yet.</p>
+            ) : (
+              watchTomorrow.map((item) => (
+                <button
+                  key={item.id}
+                  className="list-card action-card"
+                  onClick={() => onAnalyzeTicker(item.ticker)}
+                >
+                  <div className="list-card-top">
+                    <strong>{item.ticker}</strong>
+                    <ScoreDisplay item={item} />
                   </div>
-                )}
-              </button>
-            ))
-          )}
-        </div>
-      </SectionCard>
+                  <div className="muted small">
+                    {item.summary || item.company_name || 'Watch candidate'}
+                  </div>
+                  {item.verdict === 'BUY WATCH' && item.trigger && (
+                    <div className="small trigger">{item.trigger}</div>
+                  )}
+                  {item.verdict === 'WAIT' && (
+                    <div className="small muted" style={{ marginTop: 8, fontSize: 12 }}>
+                      Wait — conditions not yet met for entry
+                    </div>
+                  )}
+                </button>
+              ))
+            )}
+          </div>
+        </SectionCard>
+      </div>
 
       {/* Reject — AVOID */}
-      <SectionCard title={`Reject (${rejected.length})`}>
-        <div className="list-wrap">
-          {rejected.length === 0 ? (
-            <p className="muted">No names yet.</p>
-          ) : (
-            rejected.map((item) => (
-              <div key={item.id} className="list-card">
-                <div className="list-card-top">
-                  <strong>{item.ticker}</strong>
-                  <Pill label="AVOID" tone="red" />
+      <div className="col-grey">
+        <SectionCard
+          title="Reject"
+          right={<Pill label={String(rejected.length)} tone="slate" />}
+        >
+          <div className="list-wrap">
+            {rejected.length === 0 ? (
+              <p className="muted">No names yet.</p>
+            ) : (
+              rejected.map((item) => (
+                <div key={item.id} className="list-card">
+                  <div className="list-card-top">
+                    <strong>{item.ticker}</strong>
+                    <Pill label="AVOID" tone="red" />
+                  </div>
+                  <div className="muted small">
+                    {item.summary || item.company_name || 'Rejected candidate'}
+                  </div>
                 </div>
-                <div className="muted small">
-                  {item.summary || item.company_name || 'Rejected candidate'}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </SectionCard>
+              ))
+            )}
+          </div>
+        </SectionCard>
+      </div>
 
     </div>
   );
