@@ -47,6 +47,9 @@ async def lifespan(app_instance: FastAPI):
             verdict=r.get('verdict'),
             market_regime=r.get('market_regime'),
             snapshot_id=r.get('snapshot_id'),
+            pm_checks=json.loads(r['pm_checks']) if r.get('pm_checks') else None,
+            pm_lesson=r.get('pm_lesson'),
+            pm_market=r.get('pm_market'),
         )
         for r in rows
     ]

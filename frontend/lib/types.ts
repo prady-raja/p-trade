@@ -5,6 +5,7 @@
 export type MarketRegime = 'green' | 'yellow' | 'red' | 'unset';
 export type Bucket = 'trade_today' | 'watch_tomorrow' | 'reject';
 export type SourceType = 'csv' | 'screenshot';
+export type TradeStatus = 'open' | 'hit_t1' | 'hit_t2' | 'stopped' | 'closed';
 
 // ---------------------------------------------------------------------------
 // New framework types (PART B)
@@ -107,7 +108,7 @@ export type TradeRecord = {
   target_1: string | null;
   target_2: string | null;
   note: string | null;
-  status: string;
+  status: TradeStatus;
   exit_price: number | null;
   current_price: number | null;
   hvs_score: number | null;
@@ -117,6 +118,10 @@ export type TradeRecord = {
   gate_failed: string | null;
   market_regime: string | null;
   snapshot_id?: string | null;
+  // Post-mortem fields
+  pm_checks: string[] | null;
+  pm_lesson: string | null;
+  pm_market: string | null;
 };
 
 export type KiteStatus = {

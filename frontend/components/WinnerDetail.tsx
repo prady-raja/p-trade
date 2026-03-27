@@ -64,7 +64,7 @@ export function WinnerDetail({
   marketRegime,
 }: Props) {
   return (
-    <SectionCard title="5. Trade Review">
+    <SectionCard title="Review">
       {!analysis ? (
         <p className="muted">
           Open any Trade Today or Watch Tomorrow name, or manually analyze a ticker above.

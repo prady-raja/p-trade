@@ -108,6 +108,9 @@ class TradeUpdateRequest(BaseModel):
     status: Optional[str] = None
     current_price: Optional[float] = None
     exit_price: Optional[float] = None
+    pm_checks: Optional[List[str]] = None
+    pm_lesson: Optional[str] = None
+    pm_market: Optional[str] = None
 
 
 class ScannerRunRequest(BaseModel):
@@ -153,6 +156,10 @@ class TradeRecord(BaseModel):
     verdict: Optional[str] = None
     market_regime: Optional[str] = None
     snapshot_id: Optional[str] = None
+    # Post-mortem fields
+    pm_checks: Optional[List[str]] = None
+    pm_lesson: Optional[str] = None
+    pm_market: Optional[str] = None
 
 
 class ScannerScoreRequest(BaseModel):

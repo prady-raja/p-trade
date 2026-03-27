@@ -1,14 +1,13 @@
 'use client';
 
 import { useState } from 'react';
-import { api } from '../lib/api';
-import type { TradeRecord } from '../lib/types';
+import type { TradeRecord, TradeStatus } from '../lib/types';
 import { Pill } from './Pill';
 import { SectionCard } from './SectionCard';
 
 type Props = {
   trades: TradeRecord[];
-  onRefresh: () => void;
+  onUpdate: (id: string, patch: Partial<TradeRecord>) => Promise<void>;
 };
 
 // ---------------------------------------------------------------------------
@@ -23,7 +22,9 @@ function verdictTone(v?: string | null): 'green' | 'yellow' | 'red' | 'blue' | '
   return 'slate';
 }
 
-function statusPill(status: string): { label: string; tone: 'green' | 'yellow' | 'red' | 'blue' | 'slate' } {
+type StatusPillInfo = { label: string; tone: 'green' | 'yellow' | 'red' | 'blue' | 'slate' };
+
+function statusPill(status: string): StatusPillInfo {
   switch (status) {
     case 'open':    return { label: 'OPEN',    tone: 'blue' };
     case 'hit_t1':  return { label: 'T1 HIT',  tone: 'green' };
@@ -34,7 +35,10 @@ function statusPill(status: string): { label: string; tone: 'green' | 'yellow' |
   }
 }
 
-function fmt(n: number): string {
+function fmtPrice(s: string | null): string {
+  if (!s) return '—';
+  const n = parseFloat(s);
+  if (isNaN(n)) return '—';
   return '₹' + n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
@@ -44,109 +48,114 @@ function fmt(n: number): string {
 
 type ZoneInfo = {
   zone: number;
-  zoneLabel: string;
-  action: string;
   sl: number;
-  progressPct?: number; // 0-100, only when status=hit_t1 and current_price is set
+  pct: number | null;
+  action: string;
+  desc: string;
 };
-
-const ZONE_LABELS = [
-  '',
-  'Zone 1 — Hold Original',
-  'Zone 2 — Breakeven',
-  'Zone 3 — Trail to T1',
-  'Zone 4 — Tighten',
-];
 
 function trailZone(trade: TradeRecord): ZoneInfo | null {
   if (trade.status !== 'open' && trade.status !== 'hit_t1') return null;
 
-  const entry = parseFloat(trade.entry ?? '');
-  const sl    = parseFloat(trade.stop_loss ?? '');
-  const t1    = parseFloat(trade.target_1 ?? '');
-  const t2    = parseFloat(trade.target_2 ?? '');
-
-  if (isNaN(sl) || isNaN(entry)) return null;
+  const entry = parseFloat(trade.entry     ?? '0');
+  const stop  = parseFloat(trade.stop_loss ?? '0');
+  const t1    = parseFloat(trade.target_1  ?? '0');
+  const t2    = parseFloat(trade.target_2  ?? '0');
+  const cp    = trade.current_price;
 
   if (trade.status === 'open') {
     return {
-      zone: 1,
-      zoneLabel: ZONE_LABELS[1],
-      sl,
-      action: 'T1 not reached yet — no stop adjustment needed',
+      zone: 1, sl: stop, pct: null,
+      action: 'Hold original stop loss',
+      desc: 'T1 not reached yet — no stop adjustment needed',
     };
   }
 
   // status === 'hit_t1'
-  const cp = trade.current_price;
-
-  if (!cp || isNaN(t1) || isNaN(t2) || t2 <= t1) {
+  if (cp === null || t2 <= t1) {
     return {
-      zone: 2,
-      zoneLabel: ZONE_LABELS[2],
-      sl: entry,
-      action: 'Enter current price above to get precise zone guidance',
+      zone: 2, sl: entry, pct: null,
+      action: 'Move SL to breakeven',
+      desc: "Enter today's price to get zone guidance",
     };
   }
 
-  const rawProgress = (cp - t1) / (t2 - t1);
-  const progress    = Math.max(0, Math.min(1, rawProgress));
-  const progressPct = Math.round(progress * 100);
+  const progress = Math.min(Math.max((cp - t1) / (t2 - t1), 0), 1);
 
   if (progress < 0.5) {
-    return { zone: 2, zoneLabel: ZONE_LABELS[2], sl: entry, action: 'Move SL to breakeven', progressPct };
+    return {
+      zone: 2, sl: entry, pct: progress,
+      action: 'Move SL to breakeven',
+      desc: 'T1 hit — move stop to entry price',
+    };
   }
   if (progress < 0.8) {
-    return { zone: 3, zoneLabel: ZONE_LABELS[3], sl: t1, action: 'Trail SL up to T1 — lock minimum profit', progressPct };
+    return {
+      zone: 3, sl: t1, pct: progress,
+      action: 'Trail SL up to T1',
+      desc: 'Lock in minimum profit',
+    };
   }
-  const midpoint = (t1 + t2) / 2;
-  return { zone: 4, zoneLabel: ZONE_LABELS[4], sl: midpoint, action: 'Tighten SL — near target', progressPct };
+  return {
+    zone: 4, sl: (t1 + t2) / 2, pct: progress,
+    action: 'Tighten — near target',
+    desc: 'Protect most of the gain',
+  };
 }
 
 // ---------------------------------------------------------------------------
-// Component
+// TradeCard — one per trade row (isolated state per trade)
 // ---------------------------------------------------------------------------
 
-export function JournalSection({ trades, onRefresh }: Props) {
-  const [expandedId,      setExpandedId]      = useState<string | null>(null);
-  const [formStatus,      setFormStatus]      = useState('open');
-  const [formCurPrice,    setFormCurPrice]    = useState('');
-  const [formExitPrice,   setFormExitPrice]   = useState('');
-  const [saving,          setSaving]          = useState(false);
-  const [saveError,       setSaveError]       = useState('');
+function TradeCard({
+  trade,
+  onUpdate,
+}: {
+  trade: TradeRecord;
+  onUpdate: (id: string, patch: Partial<TradeRecord>) => Promise<void>;
+}) {
+  const [expanded,      setExpanded]      = useState(false);
+  const [formStatus,    setFormStatus]    = useState<string>(trade.status);
+  const [formCurPrice,  setFormCurPrice]  = useState('');
+  const [formExitPrice, setFormExitPrice] = useState('');
+  const [saving,        setSaving]        = useState(false);
+  const [saveError,     setSaveError]     = useState('');
 
-  function openForm(trade: TradeRecord) {
-    setExpandedId(trade.id);
+  const zone      = trailZone(trade);
+  const sp        = statusPill(trade.status);
+  const hasBelow  = zone !== null || expanded;
+  const needsExit = formStatus === 'stopped' || formStatus === 'closed';
+
+  const t1 = parseFloat(trade.target_1 ?? '0');
+  const t2 = parseFloat(trade.target_2 ?? '0');
+
+  function openForm() {
     setFormStatus(trade.status);
     setFormCurPrice(trade.current_price != null ? String(trade.current_price) : '');
     setFormExitPrice(trade.exit_price   != null ? String(trade.exit_price)    : '');
     setSaveError('');
+    setExpanded(true);
   }
 
   function closeForm() {
-    setExpandedId(null);
-    setFormStatus('open');
-    setFormCurPrice('');
-    setFormExitPrice('');
+    setExpanded(false);
     setSaveError('');
   }
 
-  async function saveUpdate(tradeId: string) {
+  async function handleSave() {
     setSaving(true);
     setSaveError('');
     try {
-      const body: Record<string, unknown> = { status: formStatus };
-      if (formCurPrice)  body.current_price = parseFloat(formCurPrice);
-      const needsExit = formStatus === 'stopped' || formStatus === 'closed';
-      if (needsExit && formExitPrice) body.exit_price = parseFloat(formExitPrice);
-
-      await api(`/trades/${tradeId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      closeForm();
-      onRefresh();
+      const patch: Partial<TradeRecord> = {};
+      if (formStatus !== trade.status) patch.status = formStatus as TradeStatus;
+      const cp = parseFloat(formCurPrice);
+      if (!isNaN(cp) && cp > 0) patch.current_price = cp;
+      if (needsExit) {
+        const ep = parseFloat(formExitPrice);
+        if (!isNaN(ep) && ep > 0) patch.exit_price = ep;
+      }
+      await onUpdate(trade.id, patch);
+      setExpanded(false);
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : 'Failed to update trade');
     } finally {
@@ -155,148 +164,145 @@ export function JournalSection({ trades, onRefresh }: Props) {
   }
 
   return (
-    <SectionCard title="6. Journal">
-      {trades.length === 0 ? (
-        <p className="muted">
-          No trades logged yet. Analyze a winner and log it from Section 5.
-        </p>
-      ) : (
-        <div className="list-wrap">
-          {trades.map((trade) => {
-            const zone       = trailZone(trade);
-            const sp         = statusPill(trade.status);
-            const isExpanded = expandedId === trade.id;
-            const needsExit  = formStatus === 'stopped' || formStatus === 'closed';
+    <div style={{ marginBottom: 12 }}>
+      {/* ── Trade row card ── */}
+      <div
+        className="list-card"
+        style={hasBelow ? { borderRadius: '10px 10px 0 0', borderBottom: 'none' } : undefined}
+      >
+        <div className="trade-row">
+          <div className="trade-row-left">
+            <strong style={{ fontSize: 15, flexShrink: 0 }}>{trade.ticker}</strong>
+            {trade.verdict
+              ? <Pill label={trade.verdict} tone={verdictTone(trade.verdict)} />
+              : <Pill label="—" tone="slate" />
+            }
+            {trade.hvs_score != null && (
+              <span className="pill pill-slate" style={{ fontSize: 11, padding: '2px 8px' }}>
+                HVS {trade.hvs_score}/34
+              </span>
+            )}
+          </div>
+          <div className="trade-row-center">
+            Entry {fmtPrice(trade.entry)} · SL {fmtPrice(trade.stop_loss)} · T1 {fmtPrice(trade.target_1)}
+          </div>
+          <div className="trade-row-right">
+            <Pill label={sp.label} tone={sp.tone} />
+            <button
+              className="btn btn-secondary"
+              style={{ padding: '5px 10px', fontSize: 12 }}
+              onClick={expanded ? closeForm : openForm}
+            >
+              {expanded ? 'Close ▴' : 'Update ▾'}
+            </button>
+          </div>
+        </div>
+      </div>
 
-            return (
-              <div key={trade.id}>
-                {/* ── Trade row card ── */}
-                <div
-                  className="list-card"
-                  style={{ borderRadius: zone ? '14px 14px 0 0' : undefined }}
-                >
-                  {/* Row 1: ticker + verdict + status + HVS */}
-                  <div className="list-card-top">
-                    <strong style={{ fontSize: 15 }}>{trade.ticker}</strong>
-                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                      {trade.verdict && (
-                        <Pill label={trade.verdict} tone={verdictTone(trade.verdict)} />
-                      )}
-                      <Pill label={sp.label} tone={sp.tone} />
-                      {trade.hvs_score != null && (
-                        <span className="pill pill-slate" style={{ fontSize: 11, padding: '3px 8px' }}>
-                          HVS {trade.hvs_score}/34
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Row 2: price levels */}
-                  <div className="small muted" style={{ display: 'flex', gap: 16, marginTop: 6, flexWrap: 'wrap' }}>
-                    {trade.entry     && <span>Entry <strong style={{ color: 'var(--text)' }}>₹{trade.entry}</strong></span>}
-                    {trade.stop_loss && <span>SL <strong className="danger">₹{trade.stop_loss}</strong></span>}
-                    {trade.target_1  && <span>T1 <strong className="success">₹{trade.target_1}</strong></span>}
-                    {trade.target_2  && <span>T2 <strong className="success">₹{trade.target_2}</strong></span>}
-                    {trade.current_price != null && (
-                      <span>CMP <strong style={{ color: 'var(--text)' }}>₹{trade.current_price}</strong></span>
-                    )}
-                  </div>
-
-                  {/* Row 3: note */}
-                  {trade.note && (
-                    <div className="small muted" style={{ marginTop: 6 }}>{trade.note}</div>
-                  )}
-
-                  {/* Row 4: update button / inline form */}
-                  <div style={{ marginTop: 10 }}>
-                    {isExpanded ? (
-                      <div className="stack">
-                        <div className="form-grid" style={{ marginBottom: 0 }}>
-                          <label>
-                            <span>Current Price</span>
-                            <input
-                              type="number"
-                              value={formCurPrice}
-                              onChange={(e) => setFormCurPrice(e.target.value)}
-                              placeholder="e.g. 1540"
-                            />
-                          </label>
-                          <label>
-                            <span>Status</span>
-                            <select
-                              value={formStatus}
-                              onChange={(e) => setFormStatus(e.target.value)}
-                            >
-                              <option value="open">Open</option>
-                              <option value="hit_t1">T1 Hit</option>
-                              <option value="hit_t2">T2 Hit</option>
-                              <option value="stopped">Stopped Out</option>
-                              <option value="closed">Closed</option>
-                            </select>
-                          </label>
-                        </div>
-                        {needsExit && (
-                          <label>
-                            <span>Exit Price</span>
-                            <input
-                              type="number"
-                              value={formExitPrice}
-                              onChange={(e) => setFormExitPrice(e.target.value)}
-                              placeholder="e.g. 1480"
-                            />
-                          </label>
-                        )}
-                        {saveError && (
-                          <div className="banner banner-error">{saveError}</div>
-                        )}
-                        <div style={{ display: 'flex', gap: 8 }}>
-                          <button
-                            className="btn btn-primary"
-                            onClick={() => saveUpdate(trade.id)}
-                            disabled={saving}
-                          >
-                            {saving ? 'Saving...' : 'Save'}
-                          </button>
-                          <button className="btn btn-secondary" onClick={closeForm}>
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <button
-                        className="btn btn-secondary"
-                        style={{ padding: '6px 12px', fontSize: 13 }}
-                        onClick={() => openForm(trade)}
-                      >
-                        Update
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* ── Trailing SL zone strip ── */}
-                {zone && (
-                  <div className={`trail-strip trail-strip-${zone.zone}`}>
-                    <div>
-                      <span className={`zone-chip zone-${zone.zone}`}>{zone.zoneLabel}</span>
-                      <span style={{ marginLeft: 10, fontSize: 13 }}>{zone.action}</span>
-                      {zone.progressPct !== undefined && (
-                        <div className="trail-bar-track">
-                          <div
-                            className="trail-bar-fill"
-                            style={{ width: `${zone.progressPct}%` }}
-                          />
-                        </div>
-                      )}
-                    </div>
-                    <div style={{ fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap' }}>
-                      GTT Stop: {fmt(zone.sl)}
-                    </div>
-                  </div>
-                )}
+      {/* ── Trailing SL strip ── */}
+      {zone && (
+        <div
+          className={`trail-strip trail-zone-${zone.zone}`}
+          style={expanded ? { borderRadius: 0 } : undefined}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span className={`zone-chip zone-${zone.zone}-chip`}>Zone {zone.zone}</span>
+              <span style={{ fontSize: 13, fontWeight: 700 }}>{zone.action}</span>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--muted)' }}>{zone.desc}</div>
+          </div>
+          <div className="trail-gtt">GTT Stop: ₹{zone.sl.toLocaleString('en-IN')}</div>
+          {trade.status === 'hit_t1' && trade.current_price !== null && zone.pct !== null && (
+            <div style={{ width: '100%' }}>
+              <div className="trail-bar-labels">
+                <span>T1 ₹{t1.toLocaleString('en-IN')}</span>
+                <span>T2 ₹{t2.toLocaleString('en-IN')}</span>
               </div>
-            );
-          })}
+              <div className="trail-bar-track">
+                <div
+                  className="trail-bar-fill"
+                  style={{ width: `${Math.round(zone.pct * 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Inline update form ── */}
+      {expanded && (
+        <div className="update-form">
+          <div className="update-form-grid">
+            <div>
+              <span className="form-label">Current Price (₹)</span>
+              <input
+                type="number"
+                value={formCurPrice}
+                onChange={(e) => setFormCurPrice(e.target.value)}
+                placeholder="e.g. 1540"
+              />
+            </div>
+            <div>
+              <span className="form-label">Status</span>
+              <select
+                value={formStatus}
+                onChange={(e) => setFormStatus(e.target.value)}
+              >
+                <option value="open">Open</option>
+                <option value="hit_t1">T1 Hit</option>
+                <option value="hit_t2">T2 Hit</option>
+                <option value="stopped">Stopped Out</option>
+                <option value="closed">Closed</option>
+              </select>
+            </div>
+          </div>
+          {needsExit && (
+            <div style={{ marginBottom: 12 }}>
+              <span className="form-label">Exit Price (₹)</span>
+              <input
+                type="number"
+                value={formExitPrice}
+                onChange={(e) => setFormExitPrice(e.target.value)}
+                placeholder="e.g. 1480"
+              />
+            </div>
+          )}
+          {saveError && (
+            <div className="banner banner-error" style={{ marginBottom: 10 }}>{saveError}</div>
+          )}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="btn btn-primary"
+              onClick={handleSave}
+              disabled={saving}
+            >
+              {saving ? 'Saving...' : 'Save'}
+            </button>
+            <button className="btn btn-secondary" onClick={closeForm}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// JournalSection
+// ---------------------------------------------------------------------------
+
+export function JournalSection({ trades, onUpdate }: Props) {
+  return (
+    <SectionCard title="Trades">
+      {trades.length === 0 ? (
+        <p className="muted">No trades yet — log your first from Review above</p>
+      ) : (
+        <div>
+          {trades.map((trade) => (
+            <TradeCard key={trade.id} trade={trade} onUpdate={onUpdate} />
+          ))}
         </div>
       )}
     </SectionCard>

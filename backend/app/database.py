@@ -98,6 +98,9 @@ CREATE TABLE IF NOT EXISTS trades (
     qty             INTEGER,
     capital         REAL,
     market_regime   TEXT,
+    pm_checks       TEXT,
+    pm_lesson       TEXT,
+    pm_market       TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 )
@@ -160,6 +163,9 @@ _NEW_TRADE_COLUMNS: List[str] = [
     'ALTER TABLE trades ADD COLUMN gate_failed  TEXT',
     'ALTER TABLE trades ADD COLUMN verdict      TEXT',
     'ALTER TABLE trades ADD COLUMN snapshot_id  TEXT',
+    'ALTER TABLE trades ADD COLUMN pm_checks    TEXT',
+    'ALTER TABLE trades ADD COLUMN pm_lesson    TEXT',
+    'ALTER TABLE trades ADD COLUMN pm_market    TEXT',
 ]
 
 
@@ -239,14 +245,14 @@ def _upsert_trade_sql(dialect_name: str) -> str:
              bucket, score, score_breakdown, exit_price, current_price,
              qty, capital, market_regime,
              hvs_score, opt_score, gates_passed, gate_failed, verdict,
-             snapshot_id,
+             snapshot_id, pm_checks, pm_lesson, pm_market,
              created_at, updated_at)
         VALUES
             (:id, :ticker, :entry, :stop_loss, :target_1, :target_2, :note, :status,
              :bucket, :score, :score_breakdown, :exit_price, :current_price,
              :qty, :capital, :market_regime,
              :hvs_score, :opt_score, :gates_passed, :gate_failed, :verdict,
-             :snapshot_id,
+             :snapshot_id, :pm_checks, :pm_lesson, :pm_market,
              :created_at, :updated_at)
         ON CONFLICT (id) DO UPDATE SET
             ticker          = EXCLUDED.ticker,
@@ -270,6 +276,9 @@ def _upsert_trade_sql(dialect_name: str) -> str:
             gate_failed     = EXCLUDED.gate_failed,
             verdict         = EXCLUDED.verdict,
             snapshot_id     = EXCLUDED.snapshot_id,
+            pm_checks       = EXCLUDED.pm_checks,
+            pm_lesson       = EXCLUDED.pm_lesson,
+            pm_market       = EXCLUDED.pm_market,
             updated_at      = EXCLUDED.updated_at
         """
     # SQLite
@@ -279,14 +288,14 @@ def _upsert_trade_sql(dialect_name: str) -> str:
          bucket, score, score_breakdown, exit_price, current_price,
          qty, capital, market_regime,
          hvs_score, opt_score, gates_passed, gate_failed, verdict,
-         snapshot_id,
+         snapshot_id, pm_checks, pm_lesson, pm_market,
          created_at, updated_at)
     VALUES
         (:id, :ticker, :entry, :stop_loss, :target_1, :target_2, :note, :status,
          :bucket, :score, :score_breakdown, :exit_price, :current_price,
          :qty, :capital, :market_regime,
          :hvs_score, :opt_score, :gates_passed, :gate_failed, :verdict,
-         :snapshot_id,
+         :snapshot_id, :pm_checks, :pm_lesson, :pm_market,
          :created_at, :updated_at)
     """
 
@@ -329,6 +338,12 @@ def db_insert_trade(trade: Dict) -> None:
                 'gate_failed':    trade.get('gate_failed'),
                 'verdict':        trade.get('verdict'),
                 'snapshot_id':    trade.get('snapshot_id'),
+                'pm_checks': (
+                    json.dumps(trade['pm_checks'])
+                    if isinstance(trade.get('pm_checks'), list) else trade.get('pm_checks')
+                ),
+                'pm_lesson':      trade.get('pm_lesson'),
+                'pm_market':      trade.get('pm_market'),
                 'created_at':     trade.get('created_at') or _now(),
                 'updated_at':     _now(),
             },
@@ -340,6 +355,9 @@ def db_update_trade(
     status: Optional[str] = None,
     current_price: Optional[float] = None,
     exit_price: Optional[float] = None,
+    pm_checks: Optional[List] = None,
+    pm_lesson: Optional[str] = None,
+    pm_market: Optional[str] = None,
 ) -> None:
     """DB: trade persistence — update mutable fields. Only sets columns that are provided."""
     updates: List[str] = []
@@ -354,6 +372,15 @@ def db_update_trade(
     if exit_price is not None:
         updates.append('exit_price = :exit_price')
         params['exit_price'] = exit_price
+    if pm_checks is not None:
+        updates.append('pm_checks = :pm_checks')
+        params['pm_checks'] = json.dumps(pm_checks) if isinstance(pm_checks, list) else pm_checks
+    if pm_lesson is not None:
+        updates.append('pm_lesson = :pm_lesson')
+        params['pm_lesson'] = pm_lesson
+    if pm_market is not None:
+        updates.append('pm_market = :pm_market')
+        params['pm_market'] = pm_market
     if not updates:
         return
 

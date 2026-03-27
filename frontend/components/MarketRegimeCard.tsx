@@ -21,7 +21,7 @@ export function MarketRegimeCard({
 }: Props) {
   return (
     <SectionCard
-      title="1. Market Regime"
+      title="Market"
       right={
         marketLoading ? (
           <Pill label="LOADING..." tone="slate" />

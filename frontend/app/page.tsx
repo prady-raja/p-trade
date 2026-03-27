@@ -3,12 +3,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { BrokerConnectionCard } from '../components/BrokerConnectionCard';
 import { BucketColumns } from '../components/BucketColumns';
+import { DashboardSection } from '../components/DashboardSection';
 import { ImportPanel } from '../components/ImportPanel';
 import { JournalSection } from '../components/JournalSection';
 import { MarketRegimeCard } from '../components/MarketRegimeCard';
 import { Pill } from '../components/Pill';
+import { PostMortemModal } from '../components/PostMortemModal';
 import { PreviewList } from '../components/PreviewList';
 import { SectionCard } from '../components/SectionCard';
+import { T1ExitModal } from '../components/T1ExitModal';
 import { WinnerDetail } from '../components/WinnerDetail';
 import { api, MARKET_CACHE_KEY } from '../lib/api';
 import type {
@@ -34,7 +37,7 @@ export default function Page() {
   const [importedItems, setImportedItems] = useState<WatchlistItem[]>([]);
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
 
-  // Winner detail state
+  // Trade review state
   const [analysis, setAnalysis] = useState<TradeReviewResult | null>(null);
   const [selectedTicker, setSelectedTicker] = useState('');
   const [ticker, setTicker] = useState('');
@@ -50,14 +53,18 @@ export default function Page() {
   const [kiteStatus, setKiteStatus] = useState<KiteStatus | null>(null);
   const [kiteLoading, setKiteLoading] = useState('');
 
-  // Journal
+  // Trades
   const [trades, setTrades] = useState<TradeRecord[]>([]);
+
+  // Modal state
+  const [pmTrade, setPmTrade] = useState<TradeRecord | null>(null);
+  const [t1Trade, setT1Trade] = useState<TradeRecord | null>(null);
 
   // Position sizing capital
   const [capital, setCapital] = useState<number>(0);
 
   // Derived
-  const openCount = trades.filter((t) => t.status === 'open').length;
+  const openTradeCount = trades.filter((t) => t.status === 'open').length;
 
   useEffect(() => {
     fetchKiteStatus();
@@ -77,7 +84,7 @@ export default function Page() {
   }
 
   // ---------------------------------------------------------------------------
-  // Trades / Journal
+  // Trades
   // ---------------------------------------------------------------------------
 
   async function fetchTrades() {
@@ -85,8 +92,42 @@ export default function Page() {
       const data = await api<{ items: TradeRecord[] }>('/trades');
       setTrades(data.items || []);
     } catch {
-      // silently ignore — journal stays empty until backend is reachable
+      // silently ignore — Trades section shows empty state
     }
+  }
+
+  async function handleTradeUpdate(id: string, patch: Partial<TradeRecord>): Promise<void> {
+    // Capture current trade before fetch refreshes state
+    const currentTrade = trades.find((t) => t.id === id);
+    await api(`/trades/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    await fetchTrades();
+    if (patch.status === 'hit_t1' && currentTrade) {
+      setT1Trade({ ...currentTrade, ...patch } as TradeRecord);
+    }
+    if ((patch.status === 'stopped' || patch.status === 'closed') && currentTrade) {
+      setPmTrade({ ...currentTrade, ...patch } as TradeRecord);
+    }
+  }
+
+  async function handleLessonsSave(
+    id: string,
+    pm: { pm_checks: string; pm_lesson: string; pm_market: string }
+  ): Promise<void> {
+    await api(`/trades/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        pm_checks: pm.pm_checks ? [pm.pm_checks] : null,
+        pm_lesson: pm.pm_lesson || null,
+        pm_market: pm.pm_market || null,
+      }),
+    });
+    await fetchTrades();
+    setPmTrade(null);
   }
 
   // ---------------------------------------------------------------------------
@@ -312,7 +353,6 @@ export default function Page() {
           target_1: analysis.target_1 != null ? String(analysis.target_1) : undefined,
           target_2: analysis.target_2 != null ? String(analysis.target_2) : undefined,
           note: tradeNote,
-          // New framework fields
           hvs_score: analysis.hvs_score ?? undefined,
           opt_score: analysis.opt_score ?? undefined,
           gates_passed: analysis.gates
@@ -320,9 +360,7 @@ export default function Page() {
             .map((g) => g.name),
           gate_failed: analysis.gates?.find((g) => g.status === 'failed')?.name ?? undefined,
           verdict: analysis.verdict ?? undefined,
-          // Market regime at time of logging
           market_regime: market.regime !== 'unset' ? market.regime : undefined,
-          // Snapshot link (Part 1)
           snapshot_id: analysis.snapshot_id ?? undefined,
         }),
       });
@@ -379,7 +417,7 @@ export default function Page() {
 
       {/* ── Sticky top bar ── */}
       <div className="top-bar">
-        <span className="top-bar-logo">P Trade</span>
+        <span className="top-bar-logo">PTS</span>
         <Pill
           label={market.regime === 'unset' ? '—' : market.regime.toUpperCase()}
           tone={regimePillTone(market.regime)}
@@ -388,7 +426,7 @@ export default function Page() {
           label={kiteStatus?.connected ? 'Kite Connected' : 'Kite Disconnected'}
           tone={kiteStatus?.connected ? 'green' : 'red'}
         />
-        <Pill label={`${openCount} open`} tone="slate" />
+        <Pill label={`${openTradeCount} open`} tone="slate" />
       </div>
 
       {/* ── Regime strip (hidden when unset) ── */}
@@ -416,9 +454,9 @@ export default function Page() {
       {/* ── Hero ── */}
       <div className="hero">
         <div>
-          <div className="eyebrow">P Trade · PTS Methodology</div>
-          <h1>PTS Workspace</h1>
-          <p>Import your watchlist · Score setups · Review and log trades</p>
+          <div className="eyebrow">Positional Trading System</div>
+          <h1>PTS</h1>
+          <p>Your personal NSE trading system</p>
         </div>
         <div className="hero-actions">
           <button
@@ -426,10 +464,10 @@ export default function Page() {
             onClick={runMarketRefresh}
             disabled={marketLoading}
           >
-            Refresh Market
+            Refresh
           </button>
           <button className="btn btn-secondary" onClick={refreshNextDay}>
-            Sync Watchlist
+            Sync
           </button>
         </div>
       </div>
@@ -443,7 +481,7 @@ export default function Page() {
         </div>
       )}
 
-      {/* 1. Market Regime */}
+      {/* Market */}
       <MarketRegimeCard
         market={market}
         marketLoading={marketLoading}
@@ -452,7 +490,7 @@ export default function Page() {
         onFetchMarketRegime={fetchMarketRegime}
       />
 
-      {/* 2. Broker Connection */}
+      {/* Broker */}
       <BrokerConnectionCard
         kiteStatus={kiteStatus}
         kiteLoading={kiteLoading}
@@ -461,14 +499,14 @@ export default function Page() {
         onLogout={logoutKite}
       />
 
-      {/* 3. Import Watchlist */}
+      {/* Watchlist */}
       <ImportPanel
         onImportCsv={importScreenerCsv}
         onImportScreenshot={importScreenerScreenshot}
       />
 
-      {/* 4. Score Watchlist */}
-      <SectionCard title="3. Score Watchlist">
+      {/* Score */}
+      <SectionCard title="Score">
         <div className="stack">
           <p className="muted">
             {importedItems.length > 0
@@ -487,14 +525,14 @@ export default function Page() {
         </div>
       </SectionCard>
 
-      {/* 5. Preview */}
+      {/* Preview */}
       <PreviewList
         importedItems={importedItems}
         watchlist={watchlist}
         onRemove={removeImportedItem}
       />
 
-      {/* 6. Bucket columns */}
+      {/* Buckets */}
       <BucketColumns
         tradeToday={tradeToday}
         watchTomorrow={watchTomorrow}
@@ -502,8 +540,8 @@ export default function Page() {
         onAnalyzeTicker={analyzeTicker}
       />
 
-      {/* 7. Analyze Ticker */}
-      <SectionCard title="4. Analyze Ticker">
+      {/* Analyze */}
+      <SectionCard title="Analyze">
         <div className="form-grid">
           <label>
             <span>Ticker</span>
@@ -527,7 +565,7 @@ export default function Page() {
         </button>
       </SectionCard>
 
-      {/* 8. Trade Review */}
+      {/* Review */}
       <WinnerDetail
         analysis={analysis}
         tradeNote={tradeNote}
@@ -538,8 +576,22 @@ export default function Page() {
         marketRegime={market.regime}
       />
 
-      {/* Journal */}
-      <JournalSection trades={trades} onRefresh={fetchTrades} />
+      {/* Trades */}
+      <JournalSection trades={trades} onUpdate={handleTradeUpdate} />
+
+      {/* Performance */}
+      <DashboardSection trades={trades} />
+
+      {/* Modals */}
+      <PostMortemModal
+        trade={pmTrade}
+        onSave={handleLessonsSave}
+        onClose={() => setPmTrade(null)}
+      />
+      <T1ExitModal
+        trade={t1Trade}
+        onClose={() => setT1Trade(null)}
+      />
 
     </main>
   );

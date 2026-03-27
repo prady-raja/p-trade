@@ -91,13 +91,14 @@ input:focus, textarea:focus, select:focus { border-color: #1a1a1a; }
 .zone-2 { background: #dcfce7; color: #166534; }
 .zone-3 { background: #bbf7d0; color: #166534; }
 .zone-4 { background: #86efac; color: #14532d; }
-.trail-strip { padding: 10px 14px; border-radius: 0 0 var(--radius) var(--radius); margin-top: -1px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.trail-strip { padding: 10px 16px; border-radius: 0 0 10px 10px; margin-top: -1px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .trail-strip-1 { background: #eff6ff; color: #1e40af; }
 .trail-strip-2 { background: #f0fdf4; color: #166534; }
 .trail-strip-3 { background: #dcfce7; color: #166534; }
 .trail-strip-4 { background: #bbf7d0; color: #14532d; }
-.trail-bar-track { height: 6px; background: #e8e8e3; border-radius: 3px; overflow: hidden; margin-top: 8px; max-width: 200px; }
+.trail-bar-track { height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 8px; width: 100%; }
 .trail-bar-fill { height: 100%; border-radius: 3px; background: #22c55e; transition: width .4s; }
+.trail-bar-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 3px; }
 
 /* ── Part G / Part 3: position sizing ── */
 .sizing-box { background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin-top: 12px; }
@@ -108,5 +109,56 @@ input:focus, textarea:focus, select:focus { border-color: #1a1a1a; }
 .upload-zone:hover { border-color: #1a1a1a; }
 .upload-zone-label { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
 .upload-zone-filename { font-size: 13px; font-weight: 600; color: var(--text); margin-top: 6px; }
+
+/* ── Trail zone variants (new JournalSection) ── */
+.trail-zone-1 { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
+.trail-zone-2 { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
+.trail-zone-3 { background: #dcfce7; border: 1px solid #86efac; color: #166534; }
+.trail-zone-4 { background: #bbf7d0; border: 1px solid #4ade80; color: #14532d; }
+.zone-1-chip { background: #dbeafe; color: #1e40af; }
+.zone-2-chip { background: #dcfce7; color: #166534; }
+.zone-3-chip { background: #bbf7d0; color: #166534; }
+.zone-4-chip { background: #86efac; color: #14532d; }
+.trail-gtt { font-size: 13px; font-weight: 700; white-space: nowrap; }
+
+/* ── Trade row layout ── */
+.trade-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.trade-row:last-child { border-bottom: none; }
+.trade-row-left   { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.trade-row-center { font-size: 12px; color: var(--muted); flex: 2; min-width: 0; }
+.trade-row-right  { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+/* ── Inline update form ── */
+.update-form { padding: 14px 16px; background: var(--card-2); border: 1px solid var(--line); border-radius: 0 0 10px 10px; margin-top: -1px; }
+.update-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+.form-label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+
+/* ── Modals ── */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; z-index: 200; padding: 16px; }
+.modal-box { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 28px; width: 100%; max-width: 520px; max-height: 92vh; overflow-y: auto; }
+.modal-title    { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+.modal-subtitle { font-size: 13px; color: var(--muted); margin-bottom: 20px; }
+.modal-field    { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.modal-field label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.modal-actions  { display: flex; gap: 10px; margin-top: 20px; }
+
+/* ── Exit steps (T1 modal) ── */
+.exit-step { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; }
+.exit-step-icon  { font-size: 18px; flex-shrink: 0; margin-top: 2px; }
+.exit-step-title { font-size: 14px; font-weight: 600; margin-bottom: 3px; }
+.exit-step-body  { font-size: 13px; color: var(--muted); line-height: 1.6; }
+
+/* ── Performance dashboard ── */
+.dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+.dash-stat { background: var(--card-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; }
+.dash-stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin-bottom: 8px; }
+.dash-stat-value { font-size: 26px; font-weight: 700; line-height: 1.2; }
+.dash-stat-sub   { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.dash-chart-label { font-size: 13px; font-weight: 600; margin-bottom: 12px; color: var(--text); }
+.dash-bar-row    { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.dash-bar-ticker { font-size: 12px; font-weight: 600; width: 80px; flex-shrink: 0; }
+.dash-bar-track  { flex: 1; height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+.dash-bar-fill   { height: 100%; border-radius: 4px; transition: width 0.4s; }
+.dash-bar-value  { font-size: 12px; font-weight: 600; width: 60px; text-align: right; flex-shrink: 0; }
 
 @media (max-width: 860px) { .three-col { grid-template-columns: 1fr; } .hero { flex-direction: column; } }

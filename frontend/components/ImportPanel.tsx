@@ -15,7 +15,7 @@ export function ImportPanel({ onImportCsv, onImportScreenshot }: Props) {
   const screenshotRef = useRef<HTMLInputElement>(null);
 
   return (
-    <SectionCard title="2. Import Watchlist">
+    <SectionCard title="Watchlist">
       <div className="stack">
         {/* CSV upload zone */}
         <div className="upload-zone" onClick={() => csvRef.current?.click()}>

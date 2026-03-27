@@ -51,11 +51,20 @@ def update_trade_route(trade_id: str, payload: TradeUpdateRequest) -> dict:
                 trade.current_price = payload.current_price
             if payload.exit_price is not None:
                 trade.exit_price = payload.exit_price
+            if payload.pm_checks is not None:
+                trade.pm_checks = payload.pm_checks
+            if payload.pm_lesson is not None:
+                trade.pm_lesson = payload.pm_lesson
+            if payload.pm_market is not None:
+                trade.pm_market = payload.pm_market
             db_update_trade(
                 trade_id,
                 status=payload.status,
                 current_price=payload.current_price,
                 exit_price=payload.exit_price,
+                pm_checks=payload.pm_checks,
+                pm_lesson=payload.pm_lesson,
+                pm_market=payload.pm_market,
             )
             return trade.model_dump()
     raise HTTPException(status_code=404, detail='Trade not found')
