@@ -1,6 +1,6 @@
 'use client';
 
-import type { TradeReviewResult } from '../lib/types';
+import type { TradeReviewResult, Verdict } from '../lib/types';
 import { Pill } from './Pill';
 import { ResultGrid } from './ResultGrid';
 import { SectionCard } from './SectionCard';
@@ -11,6 +11,14 @@ type Props = {
   onTradeNoteChange: (note: string) => void;
   onLogTrade: () => void;
 };
+
+function verdictTone(v?: Verdict | string): 'green' | 'yellow' | 'red' | 'blue' | 'slate' {
+  if (v === 'STRONG BUY') return 'green';
+  if (v === 'BUY WATCH')  return 'blue';
+  if (v === 'WAIT')       return 'yellow';
+  if (v === 'AVOID')      return 'red';
+  return 'slate';
+}
 
 export function WinnerDetail({ analysis, tradeNote, onTradeNoteChange, onLogTrade }: Props) {
   return (
@@ -30,7 +38,7 @@ export function WinnerDetail({ analysis, tradeNote, onTradeNoteChange, onLogTrad
                 </div>
               )}
             </div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               {analysis.market_regime && (
                 <Pill
                   label={`Market: ${analysis.market_regime.toUpperCase()}`}
@@ -44,38 +52,31 @@ export function WinnerDetail({ analysis, tradeNote, onTradeNoteChange, onLogTrad
                 />
               )}
               <Pill
-                label={analysis.bucket || 'Unknown'}
-                tone={
-                  analysis.bucket === 'Trade Today'
-                    ? 'green'
-                    : analysis.bucket === 'Watch Tomorrow'
-                    ? 'yellow'
-                    : 'red'
-                }
+                label={analysis.verdict || analysis.bucket || 'Unknown'}
+                tone={verdictTone(analysis.verdict)}
               />
             </div>
           </div>
 
           <ResultGrid result={analysis} />
 
-          {(!analysis.hard_blockers || analysis.hard_blockers.length === 0) &&
-            analysis.bucket !== 'Reject' &&
-            analysis.bucket !== 'Needs Work' && (
-              <div className="stack top-gap">
-                <label>
-                  <span>Trade note</span>
-                  <textarea
-                    value={tradeNote}
-                    onChange={(e) => onTradeNoteChange(e.target.value)}
-                    placeholder="Why you are taking this trade"
-                    rows={3}
-                  />
-                </label>
-                <button className="btn btn-primary" onClick={onLogTrade}>
-                  Log Trade
-                </button>
-              </div>
-            )}
+          {/* Log Trade — shown only for tradeable setups (BUY WATCH or STRONG BUY) */}
+          {analysis.tradeable && (
+            <div className="stack top-gap">
+              <label>
+                <span>Trade note</span>
+                <textarea
+                  value={tradeNote}
+                  onChange={(e) => onTradeNoteChange(e.target.value)}
+                  placeholder="Why you are taking this trade"
+                  rows={3}
+                />
+              </label>
+              <button className="btn btn-primary" onClick={onLogTrade}>
+                Log Trade
+              </button>
+            </div>
+          )}
         </>
       )}
     </SectionCard>

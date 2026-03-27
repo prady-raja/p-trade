@@ -10,8 +10,17 @@ router = APIRouter(prefix='/trades', tags=['trades'])
 @router.post('')
 def create_trade_route(payload: TradeCreateRequest) -> dict:
     trade = create_trade(
-        payload.ticker, payload.entry, payload.stop_loss,
-        payload.target_1, payload.target_2, payload.note,
+        payload.ticker,
+        payload.entry,
+        payload.stop_loss,
+        payload.target_1,
+        payload.target_2,
+        payload.note,
+        hvs_score=payload.hvs_score,
+        opt_score=payload.opt_score,
+        gates_passed=payload.gates_passed,
+        gate_failed=payload.gate_failed,
+        verdict=payload.verdict,
     )
     return trade.model_dump()
 

@@ -17,6 +17,17 @@ Public API (identical to Phase 1B):
   db_load_all_trades()    — return all rows ordered by created_at DESC
   db_save_market_regime() — upsert the single regime row (only for resolved regimes)
   db_load_market_regime() — return the last persisted regime, or None
+
+PART B additions (schema migration):
+  Four new columns added to `trades` table:
+    hvs_score    INTEGER  — HVS score (0-34) at time of logging
+    opt_score    INTEGER  — OPT score (0-14) at time of logging
+    gates_passed TEXT     — JSON array of passed gate names
+    gate_failed  TEXT     — name of the failed gate, or NULL if all gates passed
+
+  The columns are added via ALTER TABLE in _migrate_trades_schema(), which is called
+  inside init_db(). Both SQLite and Postgres handle the error gracefully if the column
+  already exists, so this is safe on every startup.
 """
 
 import json
@@ -47,16 +58,9 @@ def _make_engine() -> Engine:
     """
     DB: engine/session
     Create a SQLAlchemy engine from the current DATABASE_URL or DB_PATH.
-    Reads module-level vars so tests can override them before calling init_db().
-
-    Postgres pool settings prevent Supabase idle-connection crashes:
-      pool_pre_ping=True  — validates connection before use (critical for Supabase)
-      pool_size=5         — base connection pool
-      max_overflow=10     — burst headroom
     """
     url = DATABASE_URL
     if url:
-        # DB: Postgres — Render / Supabase
         return create_engine(
             url,
             pool_size=5,
@@ -64,15 +68,14 @@ def _make_engine() -> Engine:
             pool_pre_ping=True,  # CRITICAL: Supabase drops idle connections
             connect_args={},
         )
-    # DB: SQLite — local dev
     return create_engine(
         f'sqlite:///{DB_PATH}',
-        connect_args={'check_same_thread': False},  # required for FastAPI sync routes
+        connect_args={'check_same_thread': False},
     )
 
 
 # ---------------------------------------------------------------------------
-# Schema DDL — CREATE TABLE IF NOT EXISTS is safe to run on every startup
+# Schema DDL
 # ---------------------------------------------------------------------------
 
 _CREATE_TRADES = """
@@ -107,6 +110,15 @@ CREATE TABLE IF NOT EXISTS market_regime (
 )
 """
 
+# New columns added in PART B — added via ALTER TABLE in _migrate_trades_schema()
+_NEW_TRADE_COLUMNS: List[str] = [
+    'ALTER TABLE trades ADD COLUMN hvs_score   INTEGER',
+    'ALTER TABLE trades ADD COLUMN opt_score   INTEGER',
+    'ALTER TABLE trades ADD COLUMN gates_passed TEXT',
+    'ALTER TABLE trades ADD COLUMN gate_failed  TEXT',
+    'ALTER TABLE trades ADD COLUMN verdict      TEXT',
+]
+
 
 # ---------------------------------------------------------------------------
 # Connection helper
@@ -132,21 +144,33 @@ def _now() -> str:
 # DB: config — Schema initialisation
 # ---------------------------------------------------------------------------
 
+def _migrate_trades_schema(conn: Connection) -> None:
+    """
+    Add new columns to the existing trades table if they do not exist yet.
+    Errors from duplicate column additions are silently ignored — both SQLite
+    and Postgres raise an error when you ADD COLUMN for an existing column.
+    """
+    for sql in _NEW_TRADE_COLUMNS:
+        try:
+            conn.execute(text(sql))
+        except Exception:
+            pass  # Column already exists — safe to ignore
+
+
 def init_db() -> None:
     """
     DB: config
-    (Re)create the SQLAlchemy engine from the current DB_PATH / DATABASE_URL,
-    then create all tables if they do not exist.
+    (Re)create the SQLAlchemy engine, create all tables, then add any new
+    columns introduced since the initial schema creation.
 
-    Safe to call on every startup and in tests (CREATE TABLE IF NOT EXISTS).
-    Tests override DB_PATH / DATABASE_URL then call init_db() to redirect the
-    engine to a temp file — this function always re-reads those module vars.
+    Safe to call on every startup (CREATE TABLE IF NOT EXISTS + silent ADD COLUMN).
     """
     global _engine
     _engine = _make_engine()
     with _engine.begin() as conn:
         conn.execute(text(_CREATE_TRADES))
         conn.execute(text(_CREATE_MARKET_REGIME))
+        _migrate_trades_schema(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -160,11 +184,15 @@ def _upsert_trade_sql(dialect_name: str) -> str:
         INSERT INTO trades
             (id, ticker, entry, stop_loss, target_1, target_2, note, status,
              bucket, score, score_breakdown, exit_price, current_price,
-             qty, capital, market_regime, created_at, updated_at)
+             qty, capital, market_regime,
+             hvs_score, opt_score, gates_passed, gate_failed, verdict,
+             created_at, updated_at)
         VALUES
             (:id, :ticker, :entry, :stop_loss, :target_1, :target_2, :note, :status,
              :bucket, :score, :score_breakdown, :exit_price, :current_price,
-             :qty, :capital, :market_regime, :created_at, :updated_at)
+             :qty, :capital, :market_regime,
+             :hvs_score, :opt_score, :gates_passed, :gate_failed, :verdict,
+             :created_at, :updated_at)
         ON CONFLICT (id) DO UPDATE SET
             ticker          = EXCLUDED.ticker,
             entry           = EXCLUDED.entry,
@@ -181,6 +209,11 @@ def _upsert_trade_sql(dialect_name: str) -> str:
             qty             = EXCLUDED.qty,
             capital         = EXCLUDED.capital,
             market_regime   = EXCLUDED.market_regime,
+            hvs_score       = EXCLUDED.hvs_score,
+            opt_score       = EXCLUDED.opt_score,
+            gates_passed    = EXCLUDED.gates_passed,
+            gate_failed     = EXCLUDED.gate_failed,
+            verdict         = EXCLUDED.verdict,
             updated_at      = EXCLUDED.updated_at
         """
     # SQLite
@@ -188,11 +221,15 @@ def _upsert_trade_sql(dialect_name: str) -> str:
     INSERT OR REPLACE INTO trades
         (id, ticker, entry, stop_loss, target_1, target_2, note, status,
          bucket, score, score_breakdown, exit_price, current_price,
-         qty, capital, market_regime, created_at, updated_at)
+         qty, capital, market_regime,
+         hvs_score, opt_score, gates_passed, gate_failed, verdict,
+         created_at, updated_at)
     VALUES
         (:id, :ticker, :entry, :stop_loss, :target_1, :target_2, :note, :status,
          :bucket, :score, :score_breakdown, :exit_price, :current_price,
-         :qty, :capital, :market_regime, :created_at, :updated_at)
+         :qty, :capital, :market_regime,
+         :hvs_score, :opt_score, :gates_passed, :gate_failed, :verdict,
+         :created_at, :updated_at)
     """
 
 
@@ -201,30 +238,40 @@ def db_insert_trade(trade: Dict) -> None:
     assert _engine is not None
     with get_db() as conn:
         sql = _upsert_trade_sql(_engine.dialect.name)
+        # gates_passed is a List[str] in the model — serialise to JSON for storage
+        gates_passed_raw = trade.get('gates_passed')
         conn.execute(
             text(sql),
             {
-                'id': trade['id'],
-                'ticker': trade['ticker'],
-                'entry': trade.get('entry'),
-                'stop_loss': trade.get('stop_loss'),
-                'target_1': trade.get('target_1'),
-                'target_2': trade.get('target_2'),
-                'note': trade.get('note'),
-                'status': trade.get('status', 'open'),
-                'bucket': trade.get('bucket'),
-                'score': trade.get('score'),
+                'id':             trade['id'],
+                'ticker':         trade['ticker'],
+                'entry':          trade.get('entry'),
+                'stop_loss':      trade.get('stop_loss'),
+                'target_1':       trade.get('target_1'),
+                'target_2':       trade.get('target_2'),
+                'note':           trade.get('note'),
+                'status':         trade.get('status', 'open'),
+                'bucket':         trade.get('bucket'),
+                'score':          trade.get('score'),
                 'score_breakdown': (
                     json.dumps(trade['score_breakdown'])
                     if trade.get('score_breakdown') else None
                 ),
-                'exit_price': trade.get('exit_price'),
-                'current_price': trade.get('current_price'),
-                'qty': trade.get('qty'),
-                'capital': trade.get('capital'),
-                'market_regime': trade.get('market_regime'),
-                'created_at': trade.get('created_at') or _now(),
-                'updated_at': _now(),
+                'exit_price':     trade.get('exit_price'),
+                'current_price':  trade.get('current_price'),
+                'qty':            trade.get('qty'),
+                'capital':        trade.get('capital'),
+                'market_regime':  trade.get('market_regime'),
+                'hvs_score':      trade.get('hvs_score'),
+                'opt_score':      trade.get('opt_score'),
+                'gates_passed':   (
+                    json.dumps(gates_passed_raw)
+                    if isinstance(gates_passed_raw, list) else gates_passed_raw
+                ),
+                'gate_failed':    trade.get('gate_failed'),
+                'verdict':        trade.get('verdict'),
+                'created_at':     trade.get('created_at') or _now(),
+                'updated_at':     _now(),
             },
         )
 

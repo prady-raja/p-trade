@@ -3,17 +3,43 @@ scoring_service.py — PTS deterministic scoring engine.
 
 Extracted from services.py. Owns:
   - Math helpers: calculate_ema, calculate_rsi, calculate_volume_ratio, calculate_rs_vs_nifty
+  - Framework helpers: _compute_gates, _compute_hvs, _compute_opt, _compute_verdict
   - analyze_ticker_with_kite  — single-ticker full PTS score
   - scan_symbols              — batch scorer, errors isolated per symbol
   - score_shortlist           — maps a WatchlistItem batch through scan_symbols
+
+Scoring methodology (PART B):
+  Hard Gates → HVS (0-34) → Verdict → OPT (0-14, never changes verdict)
+
+  Verdict rules (server-side, never overridden by AI):
+    Any gate failed           → AVOID
+    All gates pass, HVS < 18  → AVOID
+    All gates pass, HVS 18-25 → WAIT
+    All gates pass, HVS 26-33 → BUY WATCH
+    All gates pass, HVS >= 34 → STRONG BUY
+
+  HVS components (max 34):
+    trend      (0-30) → 0-14  via × 14/30
+    strength   (0-25) → 0-12  via × 12/25
+    rs_vs_nifty(0-15) → 0-8   via × 8/15
+
+  OPT components (max 14 — structurally cannot reach the WAIT threshold of 18):
+    participation (0-20) → 0-8  via × 8/20
+    weekly        (0-10) → 0-6  via × 6/10
 """
 
 import uuid
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .market_service import store
-from .models import AnalyzeResult, WatchlistItem
+from .models import (
+    AnalyzeResult,
+    GateResult,
+    HvsBreakdown,
+    OptBreakdown,
+    WatchlistItem,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +91,140 @@ def calculate_rs_vs_nifty(
 
 
 # ---------------------------------------------------------------------------
+# Framework helpers: Gates / HVS / OPT / Verdict
+# ---------------------------------------------------------------------------
+
+def _compute_gates(
+    price: float,
+    avg_volume: float,
+    ema200: Optional[float],
+) -> List[GateResult]:
+    """
+    Evaluate the three computable hard gates.
+    status is one of: passed | failed | unavailable | manual_review_required
+    """
+    gates: List[GateResult] = [
+        GateResult(
+            name='price_minimum',
+            label='Price ≥ ₹20',
+            status='passed' if price >= 20 else 'failed',
+            description=(
+                f'Penny stock — price ₹{price:.2f} is below ₹20 minimum'
+                if price < 20
+                else f'Price ₹{price:.2f} — meets ₹20 minimum'
+            ),
+        ),
+        GateResult(
+            name='liquidity_minimum',
+            label='Avg Volume ≥ 200k',
+            status='passed' if avg_volume >= 200_000 else 'failed',
+            description=(
+                f'Illiquid — avg daily volume {avg_volume / 1_000:.0f}k shares (minimum 200k required)'
+                if avg_volume < 200_000
+                else f'Avg volume {avg_volume / 1_000:.0f}k shares/day — meets liquidity minimum'
+            ),
+        ),
+    ]
+
+    if ema200 is not None:
+        gates.append(GateResult(
+            name='above_200ema',
+            label='Price > 200 EMA',
+            status='passed' if price > ema200 else 'failed',
+            description=(
+                f'Price ₹{price:.2f} below 200 EMA ₹{ema200:.2f} — structural downtrend, long side blocked'
+                if price <= ema200
+                else f'Price ₹{price:.2f} above 200 EMA ₹{ema200:.2f} — structural uptrend'
+            ),
+        ))
+    else:
+        gates.append(GateResult(
+            name='above_200ema',
+            label='Price > 200 EMA',
+            status='unavailable',
+            description='Insufficient data for 200-day EMA (need ≥200 daily candles)',
+        ))
+
+    return gates
+
+
+def _compute_hvs(
+    trend_score: int,
+    strength_score: int,
+    rs_score: int,
+) -> Tuple[int, HvsBreakdown]:
+    """
+    HVS = High Value Score (0-34).
+
+    Scales the three core deterministic components:
+      trend      (0-30) → 0-14
+      strength   (0-25) → 0-12
+      rs_vs_nifty(0-15) → 0-8
+    Max total = 34, which is exactly the STRONG BUY threshold.
+    """
+    trend_hvs    = round(trend_score    * 14 / 30)
+    momentum_hvs = round(strength_score * 12 / 25)
+    rs_hvs       = round(rs_score       *  8 / 15)
+    total = min(trend_hvs + momentum_hvs + rs_hvs, 34)
+    return total, HvsBreakdown(
+        trend=trend_hvs,
+        momentum=momentum_hvs,
+        rs_vs_nifty=rs_hvs,
+        total=total,
+    )
+
+
+def _compute_opt(
+    participation_score: int,
+    weekly_score: int,
+) -> Tuple[int, OptBreakdown]:
+    """
+    OPT = Optional Score (0-14).
+
+    Timing and polish signals only. Structurally cannot reach 18
+    (the WAIT verdict threshold), so OPT can NEVER change the verdict.
+
+      participation (0-20) → 0-8
+      weekly        (0-10) → 0-6
+    """
+    p_opt = round(participation_score * 8 / 20)
+    w_opt = round(weekly_score        * 6 / 10)
+    total = p_opt + w_opt
+    return total, OptBreakdown(participation=p_opt, weekly=w_opt, total=total)
+
+
+def _compute_verdict(gates: List[GateResult], hvs: int) -> str:
+    """
+    Server-side verdict computation. Authoritative — AI output never overrides this.
+
+    Any failed gate → AVOID, regardless of HVS.
+    No failed gates:
+      HVS < 18  → AVOID
+      HVS 18-25 → WAIT
+      HVS 26-33 → BUY WATCH
+      HVS >= 34 → STRONG BUY
+    """
+    if any(g.status == 'failed' for g in gates):
+        return 'AVOID'
+    if hvs < 18:
+        return 'AVOID'
+    if hvs < 26:
+        return 'WAIT'
+    if hvs < 34:
+        return 'BUY WATCH'
+    return 'STRONG BUY'
+
+
+def _verdict_to_bucket(verdict: str) -> str:
+    """Map new verdict strings to legacy bucket strings for backward compat."""
+    if verdict == 'STRONG BUY':
+        return 'Trade Today'
+    if verdict in ('BUY WATCH', 'WAIT'):
+        return 'Watch Tomorrow'
+    return 'Reject'
+
+
+# ---------------------------------------------------------------------------
 # Single-ticker PTS score
 # ---------------------------------------------------------------------------
 
@@ -92,42 +252,40 @@ def analyze_ticker_with_kite(ticker: str, date: Optional[str] = None) -> 'Analyz
         )
 
     closes: List[float] = [float(c['close']) for c in candles]
-    volumes: List[int] = [int(c['volume']) for c in candles]
-    latest_price = closes[-1]
+    volumes: List[int]  = [int(c['volume']) for c in candles]
+    latest_price  = closes[-1]
     latest_volume = volumes[-1]
 
-    ema20_series = calculate_ema(closes, 20)
-    ema50_series = calculate_ema(closes, 50)
+    ema20_series  = calculate_ema(closes, 20)
+    ema50_series  = calculate_ema(closes, 50)
     ema200_series = calculate_ema(closes, 200) if len(closes) >= 200 else []
 
-    latest_ema20 = ema20_series[-1] if ema20_series else None
-    latest_ema50 = ema50_series[-1] if ema50_series else None
+    latest_ema20  = ema20_series[-1]  if ema20_series  else None
+    latest_ema50  = ema50_series[-1]  if ema50_series  else None
     latest_ema200 = ema200_series[-1] if ema200_series else None
 
-    avg_volume = sum(volumes[-21:-1]) / 20 if len(volumes) >= 21 else sum(volumes[:-1]) / max(len(volumes) - 1, 1)
-    vol_ratio = calculate_volume_ratio(volumes)
-    rsi = calculate_rsi(closes)
-    extension_pct = (latest_price - latest_ema20) / latest_ema20 * 100 if latest_ema20 else None
+    avg_volume = (
+        sum(volumes[-21:-1]) / 20
+        if len(volumes) >= 21
+        else sum(volumes[:-1]) / max(len(volumes) - 1, 1)
+    )
+    vol_ratio      = calculate_volume_ratio(volumes)
+    rsi            = calculate_rsi(closes)
+    extension_pct  = (
+        (latest_price - latest_ema20) / latest_ema20 * 100
+        if latest_ema20 else None
+    )
 
-    hard_blockers: List[str] = []
     blockers: List[str] = []
-    reasons: List[str] = []
+    reasons:  List[str] = []
 
     # -------------------------------------------------------------------------
-    # HARD BLOCKERS — evaluated first, override bucket to Reject if any trigger
+    # HARD GATES — evaluated first, drive verdict via _compute_verdict()
     # -------------------------------------------------------------------------
-    if latest_price < 20:
-        hard_blockers.append(
-            f'Penny stock — price ₹{latest_price:.2f} is below ₹20 minimum'
-        )
-    if avg_volume < 200_000:
-        hard_blockers.append(
-            f'Illiquid — avg daily volume {avg_volume / 1000:.0f}k shares (minimum 200k required)'
-        )
-    if latest_ema200 is not None and latest_price < latest_ema200:
-        hard_blockers.append(
-            f'Price ₹{latest_price:.2f} below 200 EMA ₹{latest_ema200:.2f} — structural downtrend, long side blocked'
-        )
+    gates = _compute_gates(latest_price, avg_volume, latest_ema200)
+
+    # Keep hard_blockers list for backward compat (human-readable descriptions)
+    hard_blockers: List[str] = [g.description for g in gates if g.status == 'failed']
 
     # -------------------------------------------------------------------------
     # TREND SCORE (0-30): structure first — 200 EMA > 50 EMA stack > price vs 50
@@ -191,7 +349,7 @@ def analyze_ticker_with_kite(ticker: str, date: Optional[str] = None) -> 'Analyz
             f'Entry extended {extension_pct:.1f}% above 20 EMA — elevated risk, wait for pullback'
         )
     if 200_000 <= avg_volume < 500_000:
-        blockers.append(f'Low liquidity — avg volume {avg_volume / 1000:.0f}k shares/day')
+        blockers.append(f'Low liquidity — avg volume {avg_volume / 1_000:.0f}k shares/day')
 
     # -------------------------------------------------------------------------
     # PARTICIPATION SCORE (0-20): today's volume vs 20-day average
@@ -221,7 +379,7 @@ def analyze_ticker_with_kite(ticker: str, date: Optional[str] = None) -> 'Analyz
     rs_score = 0
     rs_value: Optional[float] = None
     try:
-        nifty_token = get_nifty_instrument_token()
+        nifty_token   = get_nifty_instrument_token()
         nifty_candles = get_historical_candles(nifty_token, from_date, to_date, 'day')
         nifty_closes: List[float] = [float(c['close']) for c in nifty_candles]
         rs_value = calculate_rs_vs_nifty(closes, nifty_closes)
@@ -241,19 +399,19 @@ def analyze_ticker_with_kite(ticker: str, date: Optional[str] = None) -> 'Analyz
     # WEEKLY SCORE (0-10): price vs weekly EMA20 (+8) + slope direction (+2)
     # -------------------------------------------------------------------------
     weekly_score = 0
-    weekly_ema20_val: Optional[float] = None
-    weekly_ema_slope: Optional[str] = None
+    weekly_ema20_val: Optional[float]  = None
+    weekly_ema_slope: Optional[str]    = None
     try:
         weekly_candles = get_historical_candles(instrument_token, from_date, to_date, 'week')
         if len(weekly_candles) >= 22:
             weekly_closes = [float(c['close']) for c in weekly_candles]
             weekly_ema20_series = calculate_ema(weekly_closes, 20)
             if len(weekly_ema20_series) >= 2:
-                w_price = weekly_closes[-1]
-                w_ema20_now = weekly_ema20_series[-1]
+                w_price     = weekly_closes[-1]
+                w_ema20_now  = weekly_ema20_series[-1]
                 w_ema20_prev = weekly_ema20_series[-2]
-                weekly_ema20_val = round(w_ema20_now, 2)
-                weekly_ema_slope = 'rising' if w_ema20_now > w_ema20_prev else 'falling'
+                weekly_ema20_val  = round(w_ema20_now, 2)
+                weekly_ema_slope  = 'rising' if w_ema20_now > w_ema20_prev else 'falling'
 
                 if w_price > w_ema20_now:
                     weekly_score += 8
@@ -270,39 +428,33 @@ def analyze_ticker_with_kite(ticker: str, date: Optional[str] = None) -> 'Analyz
         pass  # confirmation only — skip cleanly if unavailable
 
     # -------------------------------------------------------------------------
-    # FINAL SCORE AND BUCKET
-    # Hard blockers override bucket to Reject regardless of score.
+    # FRAMEWORK: HVS / OPT / Verdict
     # -------------------------------------------------------------------------
     total_score = trend_score + strength_score + participation_score + rs_score + weekly_score
 
-    if hard_blockers:
-        bucket = 'Reject'
-        verdict = 'REJECT'
-    elif total_score >= 75:
-        bucket = 'Trade Today'
-        verdict = 'STRONG BUY'
-    elif total_score >= 50:
-        bucket = 'Watch Tomorrow'
-        verdict = 'BUY WATCH'
-    elif total_score >= 25:
-        bucket = 'Needs Work'
-        verdict = 'WAIT'
-    else:
-        bucket = 'Reject'
-        verdict = 'REJECT'
+    hvs_total, hvs_bd = _compute_hvs(trend_score, strength_score, rs_score)
+    opt_total, opt_bd = _compute_opt(participation_score, weekly_score)
+    new_verdict        = _compute_verdict(gates, hvs_total)
+    is_tradeable       = new_verdict in ('BUY WATCH', 'STRONG BUY')
 
+    # Map verdict → bucket string (backward compat)
+    bucket = _verdict_to_bucket(new_verdict)
+
+    # -------------------------------------------------------------------------
+    # Trade level hints (summary only — numeric levels computed in review_service)
+    # -------------------------------------------------------------------------
     trigger = (
-        f'Above {latest_ema20:.2f} (20 EMA)'
-        if latest_ema20 and not hard_blockers and total_score >= 50
+        f'Above ₹{latest_ema20:.2f} (20 EMA)'
+        if latest_ema20 and is_tradeable
         else None
     )
-    stop = f'Below {latest_ema50:.2f} (50 EMA)' if latest_ema50 else None
+    stop    = f'Below ₹{latest_ema50:.2f} (50 EMA)' if latest_ema50 else None
     blocked_tag = ' [HARD BLOCKED]' if hard_blockers else ''
-    summary = f'{normalized} scored {total_score}/100. Bucket: {bucket}.{blocked_tag}'
+    summary = f'{normalized} — {new_verdict}. HVS {hvs_total}/34.{blocked_tag}'
 
     return AnalyzeResult(
         ticker=normalized,
-        verdict=verdict,
+        verdict=new_verdict,
         score=total_score,
         bucket=bucket,
         price=round(latest_price, 2),
@@ -317,26 +469,33 @@ def analyze_ticker_with_kite(ticker: str, date: Optional[str] = None) -> 'Analyz
         reasons=reasons,
         blockers=blockers,
         metrics={
-            'ema20': round(latest_ema20, 2) if latest_ema20 is not None else None,
-            'ema50': round(latest_ema50, 2) if latest_ema50 is not None else None,
-            'ema200': round(latest_ema200, 2) if latest_ema200 is not None else None,
-            'rsi': round(rsi, 1) if rsi is not None else None,
-            'rsi_label': rsi_label,
-            'volume': latest_volume,
-            'avg_volume': round(avg_volume, 0),
-            'volume_ratio': round(vol_ratio, 2) if vol_ratio is not None else None,
-            'volume_label': vol_label,
-            'rs_vs_nifty_pct': round(rs_value * 100, 2) if rs_value is not None else None,
-            'extension_pct': round(extension_pct, 1) if extension_pct is not None else None,
-            'weekly_ema20': weekly_ema20_val,
+            'ema20':           round(latest_ema20, 2)  if latest_ema20  is not None else None,
+            'ema50':           round(latest_ema50, 2)  if latest_ema50  is not None else None,
+            'ema200':          round(latest_ema200, 2) if latest_ema200 is not None else None,
+            'rsi':             round(rsi, 1)            if rsi           is not None else None,
+            'rsi_label':       rsi_label,
+            'volume':          latest_volume,
+            'avg_volume':      round(avg_volume, 0),
+            'volume_ratio':    round(vol_ratio, 2)      if vol_ratio     is not None else None,
+            'volume_label':    vol_label,
+            'rs_vs_nifty_pct': round(rs_value * 100, 2) if rs_value     is not None else None,
+            'extension_pct':   round(extension_pct, 1) if extension_pct is not None else None,
+            'weekly_ema20':    weekly_ema20_val,
             'weekly_ema_slope': weekly_ema_slope,
         },
         trigger=trigger,
         stop_loss=stop,
         target_1='Nearest resistance',
         target_2='Measured move target',
-        risk_reward='1:3.0+' if total_score >= 50 and not hard_blockers else None,
+        risk_reward='1:3.0+' if is_tradeable else None,
         summary=summary,
+        # New framework fields
+        gates=gates,
+        hvs_score=hvs_total,
+        hvs_breakdown=hvs_bd,
+        opt_score=opt_total,
+        opt_breakdown=opt_bd,
+        tradeable=is_tradeable,
     )
 
 
@@ -369,6 +528,10 @@ def scan_symbols(symbols: List[str], date: Optional[str] = None) -> List['Scanne
                 reasons=analysis.reasons,
                 blockers=analysis.blockers,
                 metrics=analysis.metrics,
+                gates=analysis.gates,
+                hvs_score=analysis.hvs_score,
+                verdict=analysis.verdict,
+                tradeable=analysis.tradeable,
             ))
         except Exception as exc:
             results.append(ScannerResultItem(
@@ -381,12 +544,21 @@ def scan_symbols(symbols: List[str], date: Optional[str] = None) -> List['Scanne
                 reasons=[],
                 blockers=[],
                 metrics=None,
+                gates=[],
+                hvs_score=None,
+                verdict=None,
+                tradeable=False,
                 error=str(exc),
             ))
 
-    # Sort: Trade Today first, then by score desc, errors at the end
-    bucket_order = {'Trade Today': 0, 'Watch Tomorrow': 1, 'Needs Work': 2, 'Reject': 3, 'Error': 4}
-    results.sort(key=lambda r: (bucket_order.get(r.bucket or 'Error', 4), -r.total_score))
+    # Sort: STRONG BUY first, then by HVS desc, errors at end
+    verdict_order = {'STRONG BUY': 0, 'BUY WATCH': 1, 'WAIT': 2, 'AVOID': 3, None: 4}
+    bucket_order  = {'Trade Today': 0, 'Watch Tomorrow': 1, 'Needs Work': 2, 'Reject': 3, 'Error': 4}
+    results.sort(key=lambda r: (
+        verdict_order.get(r.verdict, 4),
+        bucket_order.get(r.bucket or 'Error', 4),
+        -(r.hvs_score or 0),
+    ))
     return results
 
 
@@ -405,24 +577,26 @@ def score_shortlist(provided_watchlist: Optional[List[WatchlistItem]] = None) ->
         return []
 
     tickers = [item.ticker.upper().strip() for item in base_watchlist if item.ticker.strip()]
-    # Preserve original import metadata keyed by ticker
-    meta: Dict[str, WatchlistItem] = {item.ticker.upper().strip(): item for item in base_watchlist}
+    meta: Dict[str, WatchlistItem] = {
+        item.ticker.upper().strip(): item for item in base_watchlist
+    }
 
-    # Real deterministic scoring — one Kite call per ticker
     scan_results = scan_symbols(tickers)
 
-    # Map ScannerResultItem bucket strings → WatchlistItem BucketType literals
-    _BUCKET_MAP: Dict[str, str] = {
-        'Trade Today': 'trade_today',
-        'Watch Tomorrow': 'watch_tomorrow',
+    # Verdict → WatchlistItem BucketType
+    _VERDICT_BUCKET: Dict[str, str] = {
+        'STRONG BUY': 'trade_today',
+        'BUY WATCH':  'watch_tomorrow',
+        'WAIT':       'watch_tomorrow',
+        'AVOID':      'reject',
     }
 
     scored: List[WatchlistItem] = []
     for result in scan_results:
-        original = meta.get(result.ticker)
-        bucket_key = _BUCKET_MAP.get(result.bucket or '', 'reject')
+        original   = meta.get(result.ticker)
+        bucket_key = _VERDICT_BUCKET.get(result.verdict or '', 'reject')
 
-        m = result.metrics or {}
+        m     = result.metrics or {}
         ema20 = m.get('ema20')
 
         if result.error:
@@ -430,10 +604,14 @@ def score_shortlist(provided_watchlist: Optional[List[WatchlistItem]] = None) ->
             summary = f'Analysis failed: {result.error}'
         else:
             hard_tag = ' [HARD BLOCKED]' if result.hard_blockers else ''
-            summary = f'{result.ticker} scored {result.total_score}/100. Bucket: {result.bucket or "Reject"}.{hard_tag}'
+            verdict_str = result.verdict or 'AVOID'
+            summary = (
+                f'{result.ticker} — {verdict_str}. '
+                f'HVS {result.hvs_score}/34.{hard_tag}'
+            )
             trigger_text = (
                 f'Above ₹{ema20:.2f} (20 EMA)'
-                if ema20 and bucket_key != 'reject'
+                if ema20 and result.tradeable
                 else None
             )
 
@@ -443,7 +621,7 @@ def score_shortlist(provided_watchlist: Optional[List[WatchlistItem]] = None) ->
             company_name=original.company_name if original else None,
             sector=original.sector if original else None,
             source=original.source if original else 'csv',
-            bucket=bucket_key,  # type: ignore[arg-type]
+            bucket=bucket_key,       # type: ignore[arg-type]
             score=result.total_score,
             summary=summary,
             trigger=trigger_text,
@@ -451,6 +629,8 @@ def score_shortlist(provided_watchlist: Optional[List[WatchlistItem]] = None) ->
             target_1=None,
             target_2=None,
             risk_reward=None,
+            hvs_score=result.hvs_score,
+            verdict=result.verdict,
         ))
 
     store.watchlist = scored

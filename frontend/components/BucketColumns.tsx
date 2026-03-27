@@ -1,6 +1,6 @@
 'use client';
 
-import type { WatchlistItem } from '../lib/types';
+import type { Verdict, WatchlistItem } from '../lib/types';
 import { Pill } from './Pill';
 import { SectionCard } from './SectionCard';
 
@@ -11,15 +11,39 @@ type Props = {
   onAnalyzeTicker: (ticker: string) => void;
 };
 
-function scorePillTone(score: number): 'green' | 'yellow' | 'red' {
-  if (score >= 75) return 'green';
-  if (score >= 50) return 'yellow';
-  return 'red';
+function verdictTone(v?: Verdict | string): 'green' | 'yellow' | 'red' | 'blue' | 'slate' {
+  if (v === 'STRONG BUY') return 'green';
+  if (v === 'BUY WATCH')  return 'blue';
+  if (v === 'WAIT')       return 'yellow';
+  if (v === 'AVOID')      return 'red';
+  return 'slate';
+}
+
+function verdictLabel(item: WatchlistItem): string {
+  if (item.verdict) return item.verdict;
+  // Fallback for items without a verdict (e.g. re-scored with old backend)
+  if (item.bucket === 'trade_today')    return 'STRONG BUY';
+  if (item.bucket === 'watch_tomorrow') return 'BUY WATCH';
+  return 'AVOID';
+}
+
+function ScoreDisplay({ item }: { item: WatchlistItem }) {
+  const vLabel = verdictLabel(item);
+  const tone   = verdictTone(item.verdict || vLabel);
+  const hvsText = item.hvs_score != null ? `HVS ${item.hvs_score}/34` : `${item.score}/100`;
+  return (
+    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+      <Pill label={vLabel} tone={tone} />
+      <span className="muted" style={{ fontSize: 12 }}>{hvsText}</span>
+    </div>
+  );
 }
 
 export function BucketColumns({ tradeToday, watchTomorrow, rejected, onAnalyzeTicker }: Props) {
   return (
     <div className="three-col" style={{ marginTop: 16 }}>
+
+      {/* Trade Today — STRONG BUY */}
       <SectionCard title={`Trade Today (${tradeToday.length})`}>
         <div className="list-wrap">
           {tradeToday.length === 0 ? (
@@ -33,18 +57,21 @@ export function BucketColumns({ tradeToday, watchTomorrow, rejected, onAnalyzeTi
               >
                 <div className="list-card-top">
                   <strong>{item.ticker}</strong>
-                  <Pill label={`${item.score}/100`} tone={scorePillTone(item.score)} />
+                  <ScoreDisplay item={item} />
                 </div>
                 <div className="muted small">
                   {item.summary || item.company_name || 'Trade candidate'}
                 </div>
-                <div className="small trigger">{item.trigger || 'Open analysis'}</div>
+                {item.trigger && (
+                  <div className="small trigger">{item.trigger}</div>
+                )}
               </button>
             ))
           )}
         </div>
       </SectionCard>
 
+      {/* Watch Tomorrow — BUY WATCH or WAIT */}
       <SectionCard title={`Watch Tomorrow (${watchTomorrow.length})`}>
         <div className="list-wrap">
           {watchTomorrow.length === 0 ? (
@@ -58,20 +85,26 @@ export function BucketColumns({ tradeToday, watchTomorrow, rejected, onAnalyzeTi
               >
                 <div className="list-card-top">
                   <strong>{item.ticker}</strong>
-                  <Pill label={`${item.score}/100`} tone={scorePillTone(item.score)} />
+                  <ScoreDisplay item={item} />
                 </div>
                 <div className="muted small">
                   {item.summary || item.company_name || 'Watch candidate'}
                 </div>
-                <div className="small trigger">
-                  {item.trigger || 'Needs trigger confirmation'}
-                </div>
+                {item.verdict === 'BUY WATCH' && item.trigger && (
+                  <div className="small trigger">{item.trigger}</div>
+                )}
+                {item.verdict === 'WAIT' && (
+                  <div className="small muted" style={{ marginTop: 8, fontSize: 12 }}>
+                    Wait — conditions not yet met for entry
+                  </div>
+                )}
               </button>
             ))
           )}
         </div>
       </SectionCard>
 
+      {/* Reject — AVOID */}
       <SectionCard title={`Reject (${rejected.length})`}>
         <div className="list-wrap">
           {rejected.length === 0 ? (
@@ -81,7 +114,7 @@ export function BucketColumns({ tradeToday, watchTomorrow, rejected, onAnalyzeTi
               <div key={item.id} className="list-card">
                 <div className="list-card-top">
                   <strong>{item.ticker}</strong>
-                  <Pill label={`${item.score}/100`} tone="red" />
+                  <Pill label="AVOID" tone="red" />
                 </div>
                 <div className="muted small">
                   {item.summary || item.company_name || 'Rejected candidate'}
@@ -91,6 +124,7 @@ export function BucketColumns({ tradeToday, watchTomorrow, rejected, onAnalyzeTi
           )}
         </div>
       </SectionCard>
+
     </div>
   );
 }

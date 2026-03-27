@@ -273,6 +273,14 @@ export default function Page() {
           target_1: analysis.target_1 != null ? String(analysis.target_1) : undefined,
           target_2: analysis.target_2 != null ? String(analysis.target_2) : undefined,
           note: tradeNote,
+          // New framework fields — passed through to trades table
+          hvs_score: analysis.hvs_score ?? undefined,
+          opt_score: analysis.opt_score ?? undefined,
+          gates_passed: analysis.gates
+            ?.filter((g) => g.status === 'passed')
+            .map((g) => g.name),
+          gate_failed: analysis.gates?.find((g) => g.status === 'failed')?.name ?? undefined,
+          verdict: analysis.verdict ?? undefined,
         }),
       });
       setTradeNote('');

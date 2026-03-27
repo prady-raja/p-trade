@@ -4,6 +4,11 @@ review_service.py — full trade review card builder.
 Extracted from services.py. Owns:
   - build_trade_review: runs the PTS scorer, derives numeric trade levels,
     adds a weekly note, invalidation rule, and an optional AI explanation.
+
+PART B: now passes through the new framework fields (gates, hvs_score,
+hvs_breakdown, opt_score, opt_breakdown, verdict, tradeable) into
+TradeReviewResult. Entry plans (trigger, stop, targets) are gated on
+`tradeable` — non-tradeable setups (AVOID, WAIT) never show entry plans.
 """
 
 from typing import Optional
@@ -27,25 +32,26 @@ def build_trade_review(ticker: str, date: Optional[str] = None) -> 'TradeReviewR
     company_name = resolve_company_name(analysis.ticker)
 
     # -------------------------------------------------------------------------
-    # Numeric trade levels — only computed for tradeable buckets
+    # Numeric trade levels — only computed for tradeable verdicts
+    # (BUY WATCH or STRONG BUY). AVOID and WAIT get no entry plans.
     # -------------------------------------------------------------------------
     trigger_price: Optional[float] = None
-    stop_price: Optional[float] = None
-    target_1: Optional[float] = None
-    target_2: Optional[float] = None
-    rr: Optional[float] = None
+    stop_price:    Optional[float] = None
+    target_1:      Optional[float] = None
+    target_2:      Optional[float] = None
+    rr:            Optional[float] = None
 
     ema20 = m.get('ema20')
     ema50 = m.get('ema50')
 
-    if not analysis.hard_blockers and analysis.score >= 50 and ema20 and ema50:
+    if analysis.tradeable and ema20 and ema50:
         trigger_price = round(ema20, 2)
-        stop_price = round(ema50 * 0.99, 2)
-        risk = trigger_price - stop_price
+        stop_price    = round(ema50 * 0.99, 2)
+        risk          = trigger_price - stop_price
         if risk > 0:
             target_1 = round(trigger_price + 1.5 * risk, 2)
             target_2 = round(trigger_price + 3.0 * risk, 2)
-            rr = round((target_2 - trigger_price) / risk, 1)
+            rr       = round((target_2 - trigger_price) / risk, 1)
 
     # -------------------------------------------------------------------------
     # Weekly note — plain-English summary of weekly trend
@@ -53,11 +59,11 @@ def build_trade_review(ticker: str, date: Optional[str] = None) -> 'TradeReviewR
     weekly_note: Optional[str] = None
     weekly_slope = m.get('weekly_ema_slope')
     weekly_ema20 = m.get('weekly_ema20')
-    price = analysis.price
+    price        = analysis.price
     if weekly_slope and weekly_ema20 and price is not None:
-        slope_str = 'rising' if weekly_slope == 'rising' else 'declining'
-        position_str = 'above' if price > weekly_ema20 else 'below'
-        weekly_note = (
+        slope_str    = 'rising'    if weekly_slope == 'rising' else 'declining'
+        position_str = 'above'     if price > weekly_ema20     else 'below'
+        weekly_note  = (
             f'Weekly 20 EMA is {slope_str} at ₹{weekly_ema20:.2f}. '
             f'Price is {position_str} weekly trend support.'
         )
@@ -71,7 +77,9 @@ def build_trade_review(ticker: str, date: Optional[str] = None) -> 'TradeReviewR
             f'Trade invalid on daily close below ₹{stop_price:.2f} (50 EMA support zone).'
         )
     elif analysis.hard_blockers:
-        invalidation_rule = 'Rejected — hard blockers present. Do not trade.'
+        invalidation_rule = 'Rejected — hard gate failed. Do not trade.'
+    elif analysis.verdict == 'WAIT':
+        invalidation_rule = 'Setup not yet tradeable — wait for conditions to improve.'
 
     # -------------------------------------------------------------------------
     # AI explanation — single-item batch, graceful fallback
@@ -89,6 +97,10 @@ def build_trade_review(ticker: str, date: Optional[str] = None) -> 'TradeReviewR
             reasons=analysis.reasons,
             blockers=analysis.blockers,
             metrics=analysis.metrics,
+            gates=analysis.gates,
+            hvs_score=analysis.hvs_score,
+            verdict=analysis.verdict,
+            tradeable=analysis.tradeable,
         )
         ai_response = enrich_with_ai([scan_item])
         if ai_response.ai_available and ai_response.results:
@@ -118,4 +130,12 @@ def build_trade_review(ticker: str, date: Optional[str] = None) -> 'TradeReviewR
         blockers=analysis.blockers,
         metrics=analysis.metrics,
         ai_explanation=ai_explanation,
+        # New framework fields
+        gates=analysis.gates,
+        hvs_score=analysis.hvs_score,
+        hvs_breakdown=analysis.hvs_breakdown,
+        opt_score=analysis.opt_score,
+        opt_breakdown=analysis.opt_breakdown,
+        verdict=analysis.verdict,
+        tradeable=analysis.tradeable,
     )
