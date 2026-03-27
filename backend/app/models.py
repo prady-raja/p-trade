@@ -107,6 +107,7 @@ class AnalyzeResult(BaseModel):
 class TradeUpdateRequest(BaseModel):
     status: Optional[str] = None
     current_price: Optional[float] = None
+    exit_price: Optional[float] = None
 
 
 class ScannerRunRequest(BaseModel):
@@ -140,6 +141,7 @@ class TradeRecord(BaseModel):
     target_2: Optional[str] = None
     note: Optional[str] = None
     status: str = 'open'
+    exit_price: Optional[float] = None
     current_price: Optional[float] = None
     # New framework tracking fields
     hvs_score: Optional[int] = None

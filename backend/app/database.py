@@ -280,6 +280,7 @@ def db_update_trade(
     trade_id: str,
     status: Optional[str] = None,
     current_price: Optional[float] = None,
+    exit_price: Optional[float] = None,
 ) -> None:
     """DB: trade persistence — update mutable fields. Only sets columns that are provided."""
     updates: List[str] = []
@@ -291,6 +292,9 @@ def db_update_trade(
     if current_price is not None:
         updates.append('current_price = :current_price')
         params['current_price'] = current_price
+    if exit_price is not None:
+        updates.append('exit_price = :exit_price')
+        params['exit_price'] = exit_price
     if not updates:
         return
 

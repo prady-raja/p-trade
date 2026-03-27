@@ -1,3 +1,4 @@
+import json
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -37,7 +38,13 @@ async def lifespan(app_instance: FastAPI):
             target_2=r.get('target_2'),
             note=r.get('note'),
             status=r.get('status', 'open'),
+            exit_price=r.get('exit_price'),
             current_price=r.get('current_price'),
+            hvs_score=r.get('hvs_score'),
+            opt_score=r.get('opt_score'),
+            gates_passed=json.loads(r['gates_passed']) if r.get('gates_passed') else None,
+            gate_failed=r.get('gate_failed'),
+            verdict=r.get('verdict'),
         )
         for r in rows
     ]

@@ -98,12 +98,37 @@ def clear_kite_session() -> None:
 _instruments_cache: Dict[str, List[Dict[str, Any]]] = {}
 
 
+def _clear_on_auth_error(e: Exception) -> None:
+    """
+    If e is a Kite auth/token error, clear the session so is_connected() returns False
+    and the frontend can display a reconnect prompt.
+    """
+    is_auth_error = False
+    try:
+        from kiteconnect import exceptions as kite_exc
+        if isinstance(e, (kite_exc.TokenException, kite_exc.PermissionException)):
+            is_auth_error = True
+    except Exception:
+        pass
+    if not is_auth_error:
+        msg = str(e).lower()
+        if any(k in msg for k in ('403', 'invalid token', 'token expired', 'tokenerror')):
+            is_auth_error = True
+    if is_auth_error:
+        auth_state.access_token = None
+        auth_state.last_error = 'Session expired — please reconnect Kite'
+
+
 def get_instruments(exchange: str = 'NSE') -> List[Dict[str, Any]]:
     ensure_connected()
     if exchange in _instruments_cache:
         return _instruments_cache[exchange]
     kite = create_kite_client()
-    instruments = kite.instruments(exchange=exchange)
+    try:
+        instruments = kite.instruments(exchange=exchange)
+    except Exception as e:
+        _clear_on_auth_error(e)
+        raise
     _instruments_cache[exchange] = instruments
     return instruments
 
@@ -125,7 +150,11 @@ def get_historical_candles(
 ) -> List[Dict[str, Any]]:
     ensure_connected()
     kite = create_kite_client()
-    return kite.historical_data(instrument_token, from_date, to_date, interval)
+    try:
+        return kite.historical_data(instrument_token, from_date, to_date, interval)
+    except Exception as e:
+        _clear_on_auth_error(e)
+        raise
 
 
 def get_nifty_instrument_token() -> int:
@@ -178,7 +207,11 @@ def resolve_company_name(tradingsymbol: str, exchange: str = 'NSE') -> Optional[
 
 def get_profile() -> Dict[str, Any]:
     kite = create_kite_client()
-    return kite.profile()
+    try:
+        return kite.profile()
+    except Exception as e:
+        _clear_on_auth_error(e)
+        raise
 
 
 def ensure_connected() -> None:
