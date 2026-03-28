@@ -116,12 +116,12 @@ def _compute_gates(
         ),
         GateResult(
             name='liquidity_minimum',
-            label='Avg Volume ≥ 200k',
-            status='passed' if avg_volume >= 200_000 else 'failed',
+            label='Daily Value ≥ ₹5 Cr',
+            status='passed' if (avg_volume * price) >= 5_00_00_000 else 'failed',
             description=(
-                f'Illiquid — avg daily volume {avg_volume / 1_000:.0f}k shares (minimum 200k required)'
-                if avg_volume < 200_000
-                else f'Avg volume {avg_volume / 1_000:.0f}k shares/day — meets liquidity minimum'
+                f'Illiquid — avg daily traded value ₹{(avg_volume * price) / 1e7:.1f} Cr (minimum ₹5 Cr required)'
+                if (avg_volume * price) < 5_00_00_000
+                else f'Avg daily traded value ₹{(avg_volume * price) / 1e7:.1f} Cr — meets liquidity minimum'
             ),
         ),
     ]
