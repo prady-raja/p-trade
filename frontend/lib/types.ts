@@ -130,6 +130,7 @@ export type KiteStatus = {
   user_name?: string;
   login_time?: string;
   error?: string;
+  last_error?: string | null;
 };
 
 export type CachedMarket = {

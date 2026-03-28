@@ -53,11 +53,24 @@ export function BrokerConnectionCard({
           </div>
         </div>
       )}
-      {!kiteLoading && kiteStatus && !kiteStatus.connected && (
-        <div className="banner banner-error" style={{ marginBottom: 14 }}>
-          {kiteStatus.error || 'Kite is not connected.'}
-        </div>
-      )}
+      {!kiteLoading && kiteStatus && !kiteStatus.connected && (() => {
+        const isExpired =
+          kiteStatus.last_error?.toLowerCase().includes('expired') ||
+          kiteStatus.last_error?.toLowerCase().includes('session');
+        return (
+          <div className="banner banner-error" style={{ marginBottom: 14 }}>
+            {isExpired ? (
+              <>
+                <strong>Session expired</strong> — your Kite token expired
+                (resets at 6am daily). Click <strong>Connect Kite</strong> to
+                re-authenticate.
+              </>
+            ) : (
+              kiteStatus.last_error || kiteStatus.error || 'Kite is not connected.'
+            )}
+          </div>
+        );
+      })()}
       <div className="hero-actions">
         <button className="btn btn-primary" onClick={onConnect} disabled={!!kiteLoading}>
           Connect Kite

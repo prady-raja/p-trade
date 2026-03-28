@@ -8,6 +8,8 @@ import { SectionCard } from './SectionCard';
 type Props = {
   trades: TradeRecord[];
   onUpdate: (id: string, patch: Partial<TradeRecord>) => Promise<void>;
+  onT1Hit?: (trade: TradeRecord) => void;
+  onClosed?: (trade: TradeRecord) => void;
 };
 
 // ---------------------------------------------------------------------------
@@ -110,9 +112,13 @@ function trailZone(trade: TradeRecord): ZoneInfo | null {
 function TradeCard({
   trade,
   onUpdate,
+  onT1Hit,
+  onClosed,
 }: {
   trade: TradeRecord;
   onUpdate: (id: string, patch: Partial<TradeRecord>) => Promise<void>;
+  onT1Hit?: (trade: TradeRecord) => void;
+  onClosed?: (trade: TradeRecord) => void;
 }) {
   const [expanded,      setExpanded]      = useState(false);
   const [formStatus,    setFormStatus]    = useState<string>(trade.status);
@@ -156,6 +162,12 @@ function TradeCard({
       }
       await onUpdate(trade.id, patch);
       setExpanded(false);
+      if (formStatus === 'hit_t1' && onT1Hit) {
+        onT1Hit({ ...trade, ...patch } as TradeRecord);
+      }
+      if ((formStatus === 'stopped' || formStatus === 'closed') && onClosed) {
+        onClosed({ ...trade, ...patch } as TradeRecord);
+      }
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : 'Failed to update trade');
     } finally {
@@ -293,7 +305,7 @@ function TradeCard({
 // JournalSection
 // ---------------------------------------------------------------------------
 
-export function JournalSection({ trades, onUpdate }: Props) {
+export function JournalSection({ trades, onUpdate, onT1Hit, onClosed }: Props) {
   return (
     <SectionCard title="Trades">
       {trades.length === 0 ? (
@@ -301,7 +313,7 @@ export function JournalSection({ trades, onUpdate }: Props) {
       ) : (
         <div>
           {trades.map((trade) => (
-            <TradeCard key={trade.id} trade={trade} onUpdate={onUpdate} />
+            <TradeCard key={trade.id} trade={trade} onUpdate={onUpdate} onT1Hit={onT1Hit} onClosed={onClosed} />
           ))}
         </div>
       )}

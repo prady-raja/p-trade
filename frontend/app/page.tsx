@@ -97,20 +97,12 @@ export default function Page() {
   }
 
   async function handleTradeUpdate(id: string, patch: Partial<TradeRecord>): Promise<void> {
-    // Capture current trade before fetch refreshes state
-    const currentTrade = trades.find((t) => t.id === id);
     await api(`/trades/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
     });
     await fetchTrades();
-    if (patch.status === 'hit_t1' && currentTrade) {
-      setT1Trade({ ...currentTrade, ...patch } as TradeRecord);
-    }
-    if ((patch.status === 'stopped' || patch.status === 'closed') && currentTrade) {
-      setPmTrade({ ...currentTrade, ...patch } as TradeRecord);
-    }
   }
 
   async function handleLessonsSave(
@@ -398,14 +390,25 @@ export default function Page() {
   }
 
   // ---------------------------------------------------------------------------
-  // Regime pill helper
+  // Regime note formatter
   // ---------------------------------------------------------------------------
 
-  function regimePillTone(r: MarketRegime): 'green' | 'yellow' | 'red' | 'slate' {
-    if (r === 'green')  return 'green';
-    if (r === 'yellow') return 'yellow';
-    if (r === 'red')    return 'red';
-    return 'slate';
+  function formatRegimeNote(note: string): string {
+    try {
+      return note
+        .split('|')
+        .map((part) =>
+          part
+            .trim()
+            .replace(/EMA(\d+)=/, 'EMA$1 ')
+            .replace(/₹([\d.]+)/, (_, n) =>
+              '₹' + Math.round(parseFloat(n)).toLocaleString('en-IN')
+            )
+        )
+        .join(' · ');
+    } catch {
+      return note;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -419,14 +422,16 @@ export default function Page() {
       <div className="top-bar">
         <span className="top-bar-logo">PTS</span>
         <Pill
-          label={market.regime === 'unset' ? '—' : market.regime.toUpperCase()}
-          tone={regimePillTone(market.regime)}
-        />
-        <Pill
           label={kiteStatus?.connected ? 'Kite Connected' : 'Kite Disconnected'}
           tone={kiteStatus?.connected ? 'green' : 'red'}
         />
         <Pill label={`${openTradeCount} open`} tone="slate" />
+        <button className="top-bar-btn" onClick={runMarketRefresh} disabled={marketLoading}>
+          Refresh
+        </button>
+        <button className="top-bar-btn" onClick={refreshNextDay}>
+          Sync
+        </button>
       </div>
 
       {/* ── Regime strip (hidden when unset) ── */}
@@ -437,13 +442,13 @@ export default function Page() {
             <strong>{market.regime.toUpperCase()}</strong>
             {market.note && (
               <span style={{ marginLeft: 12, fontWeight: 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 500 }}>
-                {market.note}
+                {formatRegimeNote(market.note)}
               </span>
             )}
           </div>
           <span style={{ fontSize: 12, fontWeight: 400, flexShrink: 0 }}>
             {marketUpdatedAt
-              ? `Updated at ${marketUpdatedAt.toLocaleTimeString()}`
+              ? `Updated at ${String(marketUpdatedAt.getHours()).padStart(2, '0')}:${String(marketUpdatedAt.getMinutes()).padStart(2, '0')}`
               : 'Updated just now'}
           </span>
         </div>
@@ -452,24 +457,14 @@ export default function Page() {
       )}
 
       {/* ── Hero ── */}
-      <div className="hero">
-        <div>
-          <div className="eyebrow">Positional Trading System</div>
-          <h1>PTS</h1>
-          <p>Your personal NSE trading system</p>
-        </div>
-        <div className="hero-actions">
-          <button
-            className="btn btn-primary"
-            onClick={runMarketRefresh}
-            disabled={marketLoading}
-          >
-            Refresh
-          </button>
-          <button className="btn btn-secondary" onClick={refreshNextDay}>
-            Sync
-          </button>
-        </div>
+      <div style={{ marginBottom: 28, paddingTop: 16 }}>
+        <div className="eyebrow">Positional Trading System</div>
+        <h1 style={{ fontSize: 24, fontWeight: 700, margin: '6px 0 8px', lineHeight: 1.2 }}>
+          PTS
+        </h1>
+        <p className="muted" style={{ fontSize: 14, maxWidth: 520, margin: 0 }}>
+          Your personal NSE trading system
+        </p>
       </div>
 
       {/* Global feedback banner */}
@@ -577,7 +572,12 @@ export default function Page() {
       />
 
       {/* Trades */}
-      <JournalSection trades={trades} onUpdate={handleTradeUpdate} />
+      <JournalSection
+        trades={trades}
+        onUpdate={handleTradeUpdate}
+        onT1Hit={(trade) => setT1Trade(trade)}
+        onClosed={(trade) => setPmTrade(trade)}
+      />
 
       {/* Performance */}
       <DashboardSection trades={trades} />

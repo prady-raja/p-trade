@@ -161,4 +161,8 @@ input:focus, textarea:focus, select:focus { border-color: #1a1a1a; }
 .dash-bar-fill   { height: 100%; border-radius: 4px; transition: width 0.4s; }
 .dash-bar-value  { font-size: 12px; font-weight: 600; width: 60px; text-align: right; flex-shrink: 0; }
 
+.top-bar-btn { font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer; }
+.top-bar-btn:hover { background: var(--card-2); }
+.top-bar-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
 @media (max-width: 860px) { .three-col { grid-template-columns: 1fr; } .hero { flex-direction: column; } }

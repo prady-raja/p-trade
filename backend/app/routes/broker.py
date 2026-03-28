@@ -32,7 +32,11 @@ def kite_login_url() -> Dict[str, Any]:
 def kite_status() -> Dict[str, Any]:
     raw = get_kite_status()
     if not raw['connected']:
-        return {'connected': False, 'error': 'Kite is not connected.'}
+        return {
+            'connected': False,
+            'error': raw.get('last_error') or 'Kite is not connected.',
+            'last_error': raw.get('last_error'),
+        }
     return {
         'connected': True,
         'user_id': raw.get('user_id'),
