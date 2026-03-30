@@ -1,12 +1,11 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { BrokerConnectionCard } from '../components/BrokerConnectionCard';
 import { BucketColumns } from '../components/BucketColumns';
 import { DashboardSection } from '../components/DashboardSection';
+import { StudySection } from '../components/StudySection';
 import { ImportPanel } from '../components/ImportPanel';
 import { JournalSection } from '../components/JournalSection';
-import { MarketRegimeCard } from '../components/MarketRegimeCard';
 import { Pill } from '../components/Pill';
 import { PostMortemModal } from '../components/PostMortemModal';
 import { PreviewList } from '../components/PreviewList';
@@ -22,6 +21,8 @@ import type {
   TradeReviewResult,
   WatchlistItem,
 } from '../lib/types';
+
+type ActiveView = 'analyze' | 'review' | 'trades' | 'watchlist' | 'score' | 'performance' | 'study';
 
 export default function Page() {
   // Market regime state
@@ -62,6 +63,9 @@ export default function Page() {
 
   // Position sizing capital
   const [capital, setCapital] = useState<number>(0);
+
+  // Active view
+  const [activeView, setActiveView] = useState<ActiveView>('analyze');
 
   // Derived
   const openTradeCount = trades.filter((t) => t.status === 'open').length;
@@ -233,6 +237,7 @@ export default function Page() {
       setStatus(
         `${data.items?.length || 0} names imported. Review below then click "Run Scoring".`
       );
+      setActiveView('watchlist');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to import CSV');
     } finally {
@@ -255,6 +260,7 @@ export default function Page() {
       setStatus(
         `${data.items?.length || 0} names extracted from screenshot. Review below then click "Run Scoring".`
       );
+      setActiveView('watchlist');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to import screenshot');
     } finally {
@@ -297,6 +303,7 @@ export default function Page() {
       setWatchlist(data.items || []);
       setImportedItems([]);
       setStatus('Watchlist scored. Results in buckets below.');
+      setActiveView('score');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to score watchlist');
     } finally {
@@ -323,6 +330,7 @@ export default function Page() {
       setSelectedTicker(finalTicker);
       setTicker(finalTicker);
       setStatus(`${finalTicker} analysis ready.`);
+      setActiveView('review');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to analyze ticker');
     } finally {
@@ -359,6 +367,7 @@ export default function Page() {
       setTradeNote('');
       setStatus(`${analysis.symbol} trade logged.`);
       fetchTrades();
+      setActiveView('trades');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to log trade');
     } finally {
@@ -416,173 +425,361 @@ export default function Page() {
   // ---------------------------------------------------------------------------
 
   return (
-    <main className="page-shell">
+    <>
+      <div className="app-shell">
 
-      {/* ── Sticky top bar ── */}
-      <div className="top-bar">
-        <span className="top-bar-logo">PTS</span>
-        <Pill
-          label={kiteStatus?.connected ? 'Kite Connected' : 'Kite Disconnected'}
-          tone={kiteStatus?.connected ? 'green' : 'red'}
-        />
-        <Pill label={`${openTradeCount} open`} tone="slate" />
-        <button className="top-bar-btn" onClick={runMarketRefresh} disabled={marketLoading}>
-          Refresh
-        </button>
-        <button className="top-bar-btn" onClick={refreshNextDay}>
-          Sync
-        </button>
-      </div>
+        {/* ── Sticky top bar ── */}
+        <div className="top-bar">
+          <span className="top-bar-logo">PTS</span>
 
-      {/* ── Regime strip (hidden when unset) ── */}
-      {market.regime !== 'unset' ? (
-        <div className={`regime-strip regime-strip-${market.regime}`}>
-          <div style={{ display: 'flex', alignItems: 'center' }}>
-            <span className={`regime-dot regime-dot-${market.regime}`} />
-            <strong>{market.regime.toUpperCase()}</strong>
-            {market.note && (
-              <span style={{ marginLeft: 12, fontWeight: 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 500 }}>
-                {formatRegimeNote(market.note)}
-              </span>
-            )}
-          </div>
-          <span style={{ fontSize: 12, fontWeight: 400, flexShrink: 0 }}>
-            {marketUpdatedAt
-              ? `Updated at ${String(marketUpdatedAt.getHours()).padStart(2, '0')}:${String(marketUpdatedAt.getMinutes()).padStart(2, '0')}`
-              : 'Updated just now'}
-          </span>
-        </div>
-      ) : (
-        <div className="regime-spacer" />
-      )}
+          {loading && (
+            <span className="top-bar-status top-bar-status-loading">{loading}</span>
+          )}
+          {!loading && error && (
+            <span className="top-bar-status top-bar-status-error">{error}</span>
+          )}
+          {!loading && !error && status && (
+            <span className="top-bar-status top-bar-status-success">{status}</span>
+          )}
+          {!loading && !error && !status && (
+            <span style={{ flex: 1 }} />
+          )}
 
-      {/* ── Hero ── */}
-      <div style={{ marginBottom: 28, paddingTop: 16 }}>
-        <div className="eyebrow">Positional Trading System</div>
-        <h1 style={{ fontSize: 24, fontWeight: 700, margin: '6px 0 8px', lineHeight: 1.2 }}>
-          PTS
-        </h1>
-        <p className="muted" style={{ fontSize: 14, maxWidth: 520, margin: 0 }}>
-          Your personal NSE trading system
-        </p>
-      </div>
-
-      {/* Global feedback banner */}
-      {(loading || error || status) && (
-        <div className="feedback-row">
-          {loading && <div className="banner banner-info">{loading}</div>}
-          {error && <div className="banner banner-error">{error}</div>}
-          {!loading && status && <div className="banner banner-success">{status}</div>}
-        </div>
-      )}
-
-      {/* Market */}
-      <MarketRegimeCard
-        market={market}
-        marketLoading={marketLoading}
-        marketError={marketError}
-        marketCachedAt={marketCachedAt}
-        onFetchMarketRegime={fetchMarketRegime}
-      />
-
-      {/* Broker */}
-      <BrokerConnectionCard
-        kiteStatus={kiteStatus}
-        kiteLoading={kiteLoading}
-        onConnect={connectKite}
-        onRefreshStatus={fetchKiteStatus}
-        onLogout={logoutKite}
-      />
-
-      {/* Watchlist */}
-      <ImportPanel
-        onImportCsv={importScreenerCsv}
-        onImportScreenshot={importScreenerScreenshot}
-      />
-
-      {/* Score */}
-      <SectionCard title="Score">
-        <div className="stack">
-          <p className="muted">
-            {importedItems.length > 0
-              ? `${importedItems.length} names ready in preview. Click to classify into buckets.`
-              : watchlist.length > 0
-              ? `${watchlist.length} scored names in buckets below. Re-import to start a new session.`
-              : 'Import names first (CSV or screenshot), then run scoring.'}
-          </p>
-          <button
-            className="btn btn-primary"
-            onClick={runShortlistScoring}
-            disabled={importedItems.length === 0 && watchlist.length === 0}
-          >
-            Run Scoring
+          <Pill
+            label={kiteStatus?.connected ? 'Kite Connected' : 'Kite Disconnected'}
+            tone={kiteStatus?.connected ? 'green' : 'red'}
+          />
+          <Pill label={`${openTradeCount} open`} tone="slate" />
+          <button className="top-bar-btn" onClick={runMarketRefresh} disabled={marketLoading}>
+            Refresh
+          </button>
+          <button className="top-bar-btn" onClick={refreshNextDay}>
+            Sync
           </button>
         </div>
-      </SectionCard>
 
-      {/* Preview */}
-      <PreviewList
-        importedItems={importedItems}
-        watchlist={watchlist}
-        onRemove={removeImportedItem}
-      />
+        {/* ── Regime strip (hidden when unset) ── */}
+        {market.regime !== 'unset' ? (
+          <div className={`regime-strip regime-strip-${market.regime}`}>
+            <div style={{ display: 'flex', alignItems: 'center' }}>
+              <span className={`regime-dot regime-dot-${market.regime}`} />
+              <strong>{market.regime.toUpperCase()}</strong>
+              {market.note && (
+                <span style={{ marginLeft: 12, fontWeight: 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 500 }}>
+                  {formatRegimeNote(market.note)}
+                </span>
+              )}
+            </div>
+            <span style={{ fontSize: 12, fontWeight: 400, flexShrink: 0 }}>
+              {marketUpdatedAt
+                ? `Updated at ${String(marketUpdatedAt.getHours()).padStart(2, '0')}:${String(marketUpdatedAt.getMinutes()).padStart(2, '0')}`
+                : 'Updated just now'}
+            </span>
+          </div>
+        ) : (
+          <div className="regime-spacer" />
+        )}
 
-      {/* Buckets */}
-      <BucketColumns
-        tradeToday={tradeToday}
-        watchTomorrow={watchTomorrow}
-        rejected={rejected}
-        onAnalyzeTicker={analyzeTicker}
-      />
+        {/* ── App body: nav + main ── */}
+        <div className="app-body">
 
-      {/* Analyze */}
-      <SectionCard title="Analyze">
-        <div className="form-grid">
-          <label>
-            <span>Ticker</span>
-            <input
-              value={ticker}
-              onChange={(e) => setTicker(e.target.value.toUpperCase())}
-              placeholder="e.g. POLYCAB"
-            />
-          </label>
-          <label>
-            <span>Date (optional)</span>
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-          </label>
+          {/* ── Left nav panel ── */}
+          <div className="nav-panel">
+
+            {/* Broker status — compact */}
+            <div className="nav-broker">
+              {kiteStatus?.connected ? (
+                <div className="nav-broker-connected">
+                  <span>
+                    <span className="nav-broker-dot" />
+                    <strong style={{ fontSize: 12 }}>{kiteStatus.user_id}</strong>
+                  </span>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ padding: '2px 8px', fontSize: 11 }}
+                    onClick={logoutKite}
+                  >
+                    Logout
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, fontSize: 12, color: '#991b1b' }}>
+                    <span className="nav-broker-dot disconnected" />
+                    {kiteStatus?.last_error || 'Not connected'}
+                  </div>
+                  <button
+                    className="btn btn-primary"
+                    style={{ width: '100%', padding: '6px', fontSize: 12 }}
+                    onClick={connectKite}
+                  >
+                    Connect Kite
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* TODAY section */}
+            <div className="nav-section">
+              <div className="nav-section-label">Today</div>
+
+              <button
+                className={`nav-item${activeView === 'analyze' ? ' active' : ''}`}
+                onClick={() => setActiveView('analyze')}
+              >
+                Analyze
+              </button>
+
+              <button
+                className={`nav-item${activeView === 'review' ? ' active' : ''}`}
+                onClick={() => setActiveView('review')}
+              >
+                Review
+                {analysis && (
+                  <span className="nav-item-count has-items">{analysis.symbol}</span>
+                )}
+              </button>
+
+              <button
+                className={`nav-item${activeView === 'trades' ? ' active' : ''}`}
+                onClick={() => setActiveView('trades')}
+              >
+                Trades
+                {openTradeCount > 0 && (
+                  <span className="nav-item-count has-items">{openTradeCount}</span>
+                )}
+              </button>
+            </div>
+
+            <div className="nav-divider" />
+
+            {/* SHORTLIST — Trade Today */}
+            {tradeToday.length > 0 && (
+              <div className="nav-section">
+                <div className="nav-section-label">Trade Today · {tradeToday.length}</div>
+                <div className="nav-bucket">
+                  {tradeToday.map((item) => (
+                    <button
+                      key={item.id}
+                      className={`nav-bucket-item${selectedTicker === item.ticker ? ' selected' : ''}`}
+                      onClick={() => {
+                        setSelectedTicker(item.ticker);
+                        analyzeTicker(item.ticker);
+                        setActiveView('review');
+                      }}
+                    >
+                      <span style={{ fontWeight: 600 }}>{item.ticker}</span>
+                      <Pill
+                        label={String(item.hvs_score ?? item.score)}
+                        tone="green"
+                      />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* SHORTLIST — Watch Tomorrow */}
+            {watchTomorrow.length > 0 && (
+              <div className="nav-section">
+                <div className="nav-section-label">Watch · {watchTomorrow.length}</div>
+                <div className="nav-bucket">
+                  {watchTomorrow.map((item) => (
+                    <button
+                      key={item.id}
+                      className={`nav-bucket-item${selectedTicker === item.ticker ? ' selected' : ''}`}
+                      onClick={() => {
+                        setSelectedTicker(item.ticker);
+                        analyzeTicker(item.ticker);
+                        setActiveView('review');
+                      }}
+                    >
+                      <span style={{ fontWeight: 600 }}>{item.ticker}</span>
+                      <Pill
+                        label={String(item.hvs_score ?? item.score)}
+                        tone="yellow"
+                      />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="nav-divider" />
+
+            {/* SETUP section */}
+            <div className="nav-section">
+              <div className="nav-section-label">Setup</div>
+
+              <button
+                className={`nav-item${activeView === 'watchlist' ? ' active' : ''}`}
+                onClick={() => setActiveView('watchlist')}
+              >
+                Watchlist
+                {importedItems.length > 0 && (
+                  <span className="nav-item-count has-items">{importedItems.length}</span>
+                )}
+              </button>
+
+              <button
+                className={`nav-item${activeView === 'score' ? ' active' : ''}`}
+                onClick={() => setActiveView('score')}
+              >
+                Score
+                {watchlist.length > 0 && (
+                  <span className="nav-item-count">{watchlist.length}</span>
+                )}
+              </button>
+            </div>
+
+            <div className="nav-divider" />
+
+            {/* TRACK section */}
+            <div className="nav-section">
+              <div className="nav-section-label">Track</div>
+
+              <button
+                className={`nav-item${activeView === 'performance' ? ' active' : ''}`}
+                onClick={() => setActiveView('performance')}
+              >
+                Performance
+              </button>
+
+              <button
+                className={`nav-item${activeView === 'study' ? ' active' : ''}`}
+                onClick={() => setActiveView('study')}
+              >
+                Study
+              </button>
+            </div>
+
+          </div>
+
+          {/* ── Main content panel ── */}
+          <div className="main-panel">
+
+            {/* Feedback inline */}
+            {(loading || error || status) && (
+              <div style={{ marginBottom: 16 }}>
+                {loading && <div className="banner banner-info">{loading}</div>}
+                {error   && <div className="banner banner-error">{error}</div>}
+                {!loading && status && <div className="banner banner-success">{status}</div>}
+              </div>
+            )}
+
+            {/* VIEW: Analyze */}
+            <div className={`view${activeView === 'analyze' ? ' active' : ''}`}>
+              <SectionCard title="Analyze">
+                <div className="form-grid">
+                  <label>
+                    <span>Ticker</span>
+                    <input
+                      value={ticker}
+                      onChange={(e) => setTicker(e.target.value.toUpperCase())}
+                      placeholder="e.g. POLYCAB"
+                    />
+                  </label>
+                  <label>
+                    <span>Date (optional)</span>
+                    <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+                  </label>
+                </div>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => {
+                    analyzeTicker();
+                    setActiveView('review');
+                  }}
+                  disabled={!ticker && !selectedTicker}
+                >
+                  Analyze
+                </button>
+              </SectionCard>
+            </div>
+
+            {/* VIEW: Review */}
+            <div className={`view${activeView === 'review' ? ' active' : ''}`}>
+              <WinnerDetail
+                analysis={analysis}
+                tradeNote={tradeNote}
+                onTradeNoteChange={setTradeNote}
+                onLogTrade={logTrade}
+                capital={capital}
+                onCapitalChange={handleCapitalChange}
+                marketRegime={market.regime}
+              />
+            </div>
+
+            {/* VIEW: Trades */}
+            <div className={`view${activeView === 'trades' ? ' active' : ''}`}>
+              <JournalSection
+                trades={trades}
+                onUpdate={handleTradeUpdate}
+                onT1Hit={(trade) => setT1Trade(trade)}
+                onClosed={(trade) => setPmTrade(trade)}
+              />
+            </div>
+
+            {/* VIEW: Watchlist (import) */}
+            <div className={`view${activeView === 'watchlist' ? ' active' : ''}`}>
+              <ImportPanel
+                onImportCsv={importScreenerCsv}
+                onImportScreenshot={importScreenerScreenshot}
+              />
+              <PreviewList
+                importedItems={importedItems}
+                watchlist={watchlist}
+                onRemove={removeImportedItem}
+              />
+            </div>
+
+            {/* VIEW: Score */}
+            <div className={`view${activeView === 'score' ? ' active' : ''}`}>
+              <SectionCard title="Score">
+                <div className="stack">
+                  <p className="muted">
+                    {importedItems.length > 0
+                      ? `${importedItems.length} names ready. Click to classify into buckets.`
+                      : watchlist.length > 0
+                      ? `${watchlist.length} scored. Re-import to start a new session.`
+                      : 'Import a watchlist first, then run scoring.'}
+                  </p>
+                  <button
+                    className="btn btn-primary"
+                    onClick={runShortlistScoring}
+                    disabled={importedItems.length === 0 && watchlist.length === 0}
+                  >
+                    Run Scoring
+                  </button>
+                </div>
+              </SectionCard>
+
+              <BucketColumns
+                tradeToday={tradeToday}
+                watchTomorrow={watchTomorrow}
+                rejected={rejected}
+                onAnalyzeTicker={(t) => {
+                  analyzeTicker(t);
+                  setActiveView('review');
+                }}
+              />
+            </div>
+
+            {/* VIEW: Performance */}
+            <div className={`view${activeView === 'performance' ? ' active' : ''}`}>
+              <DashboardSection trades={trades} />
+            </div>
+
+            {/* VIEW: Study */}
+            <div className={`view${activeView === 'study' ? ' active' : ''}`}>
+              <StudySection />
+            </div>
+
+          </div>
         </div>
-        <button
-          className="btn btn-primary"
-          onClick={() => analyzeTicker()}
-          disabled={!ticker && !selectedTicker}
-        >
-          Analyze
-        </button>
-      </SectionCard>
+      </div>
 
-      {/* Review */}
-      <WinnerDetail
-        analysis={analysis}
-        tradeNote={tradeNote}
-        onTradeNoteChange={setTradeNote}
-        onLogTrade={logTrade}
-        capital={capital}
-        onCapitalChange={handleCapitalChange}
-        marketRegime={market.regime}
-      />
-
-      {/* Trades */}
-      <JournalSection
-        trades={trades}
-        onUpdate={handleTradeUpdate}
-        onT1Hit={(trade) => setT1Trade(trade)}
-        onClosed={(trade) => setPmTrade(trade)}
-      />
-
-      {/* Performance */}
-      <DashboardSection trades={trades} />
-
-      {/* Modals */}
+      {/* Modals — outside app-body, fixed position */}
       <PostMortemModal
         trade={pmTrade}
         onSave={handleLessonsSave}
@@ -592,7 +789,6 @@ export default function Page() {
         trade={t1Trade}
         onClose={() => setT1Trade(null)}
       />
-
-    </main>
+    </>
   );
 }

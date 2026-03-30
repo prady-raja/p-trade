@@ -138,3 +138,60 @@ export type CachedMarket = {
   note?: string;
   cachedAt: number;
 };
+
+// ---------------------------------------------------------------------------
+// Study session types (PART 3)
+// ---------------------------------------------------------------------------
+
+export type StudyResult = {
+  ticker: string;
+  verdict: string | null;
+  hvs_score: number | null;
+  opt_score: number | null;
+  hard_blocked: boolean;
+  gate_failed: string | null;
+  snapshot_id: string;
+};
+
+export type StudySession = {
+  session_id: string;
+  study_date: string;
+  total: number;
+  with_outcomes: number;
+  created_at: string;
+};
+
+export type AccuracyStats = {
+  total: number;
+  winner_pct: number;
+  flat_pct: number;
+  loser_pct: number;
+};
+
+export type StudyAnalytics = {
+  total_outcomes: number;
+  accuracy_by_verdict: Record<string, AccuracyStats>;
+  avg_return_by_verdict: Record<string, number | null>;
+  component_correlation: Record<string, number | null>;
+};
+
+export type ProposedChange = {
+  id: string;
+  component: string;
+  current: string;
+  proposed: string;
+  rationale: string;
+  confidence: 'high' | 'medium' | 'low';
+  impact: 'major' | 'minor' | 'experimental';
+  status: 'proposed' | 'accepted' | 'rejected';
+};
+
+export type MethodologyReview = {
+  id: string;
+  reviewed_at: string;
+  total_outcomes: number;
+  overall_assessment: string;
+  proposed_changes: ProposedChange[];
+  methodology_version: string | null;
+  created_at: string;
+};

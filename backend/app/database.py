@@ -115,6 +115,54 @@ CREATE TABLE IF NOT EXISTS market_regime (
 )
 """
 
+_CREATE_STUDY_SNAPSHOTS = """
+CREATE TABLE IF NOT EXISTS study_snapshots (
+    id                     TEXT PRIMARY KEY,
+    session_id             TEXT NOT NULL,
+    study_date             TEXT NOT NULL,
+    ticker                 TEXT NOT NULL,
+    verdict                TEXT,
+    hvs_score              INTEGER,
+    hvs_breakdown          TEXT,
+    opt_score              INTEGER,
+    score_breakdown        TEXT,
+    gates                  TEXT,
+    hard_blocked           INTEGER DEFAULT 0,
+    gate_failed            TEXT,
+    reasons                TEXT,
+    blockers               TEXT,
+    metrics                TEXT,
+    price                  REAL,
+    rs_vs_nifty_pct        REAL,
+    market_regime          TEXT,
+    methodology_version    TEXT,
+    scoring_engine_version TEXT,
+    outcome_fetched        INTEGER DEFAULT 0,
+    outcome_eligible_after TEXT,
+    fwd_return_5d          REAL,
+    fwd_return_20d         REAL,
+    fwd_return_60d         REAL,
+    fwd_price_5d           REAL,
+    fwd_price_20d          REAL,
+    fwd_price_60d          REAL,
+    outcome_label          TEXT,
+    created_at             TEXT NOT NULL
+)
+"""
+
+_CREATE_METHODOLOGY_REVIEWS = """
+CREATE TABLE IF NOT EXISTS methodology_reviews (
+    id                    TEXT PRIMARY KEY,
+    reviewed_at           TEXT NOT NULL,
+    total_outcomes        INTEGER,
+    analytics_snapshot    TEXT,
+    proposed_changes      TEXT,
+    overall_assessment    TEXT,
+    methodology_version   TEXT,
+    created_at            TEXT NOT NULL
+)
+"""
+
 _CREATE_DECISION_SNAPSHOTS = """
 CREATE TABLE IF NOT EXISTS decision_snapshots (
     id                     TEXT PRIMARY KEY,
@@ -228,6 +276,8 @@ def init_db() -> None:
         conn.execute(text(_CREATE_TRADES))
         conn.execute(text(_CREATE_MARKET_REGIME))
         conn.execute(text(_CREATE_DECISION_SNAPSHOTS))
+        conn.execute(text(_CREATE_STUDY_SNAPSHOTS))
+        conn.execute(text(_CREATE_METHODOLOGY_REVIEWS))
         _migrate_trades_schema(conn)
         _migrate_snapshots_schema(conn)
 
@@ -480,6 +530,137 @@ def db_load_market_regime() -> Optional[Dict]:
         result = conn.execute(text('SELECT * FROM market_regime WHERE id = 1'))
         row = result.mappings().fetchone()
     return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# DB: study snapshot persistence
+# ---------------------------------------------------------------------------
+
+def db_insert_study_snapshot(snapshot: Dict) -> None:
+    """DB: study persistence — insert an immutable study snapshot row."""
+    sql = """
+    INSERT INTO study_snapshots (
+        id, session_id, study_date, ticker, verdict,
+        hvs_score, hvs_breakdown, opt_score, score_breakdown,
+        gates, hard_blocked, gate_failed, reasons, blockers, metrics,
+        price, rs_vs_nifty_pct, market_regime,
+        methodology_version, scoring_engine_version,
+        outcome_fetched, outcome_eligible_after,
+        fwd_return_5d, fwd_return_20d, fwd_return_60d,
+        fwd_price_5d, fwd_price_20d, fwd_price_60d,
+        outcome_label, created_at
+    ) VALUES (
+        :id, :session_id, :study_date, :ticker, :verdict,
+        :hvs_score, :hvs_breakdown, :opt_score, :score_breakdown,
+        :gates, :hard_blocked, :gate_failed, :reasons, :blockers, :metrics,
+        :price, :rs_vs_nifty_pct, :market_regime,
+        :methodology_version, :scoring_engine_version,
+        :outcome_fetched, :outcome_eligible_after,
+        :fwd_return_5d, :fwd_return_20d, :fwd_return_60d,
+        :fwd_price_5d, :fwd_price_20d, :fwd_price_60d,
+        :outcome_label, :created_at
+    )
+    """
+    with get_db() as conn:
+        conn.execute(text(sql), snapshot)
+
+
+def db_load_study_snapshots(session_id: Optional[str] = None) -> List[Dict]:
+    """DB: study persistence — return study snapshots, optionally filtered by session."""
+    with get_db() as conn:
+        if session_id:
+            result = conn.execute(
+                text('SELECT * FROM study_snapshots WHERE session_id = :sid ORDER BY created_at DESC'),
+                {'sid': session_id},
+            )
+        else:
+            result = conn.execute(
+                text('SELECT * FROM study_snapshots ORDER BY created_at DESC')
+            )
+        return [dict(row) for row in result.mappings().all()]
+
+
+def db_load_pending_outcomes() -> List[Dict]:
+    """DB: study persistence — return snapshots whose outcome window has passed but not yet fetched."""
+    now = _now()
+    with get_db() as conn:
+        result = conn.execute(
+            text(
+                'SELECT * FROM study_snapshots '
+                'WHERE outcome_fetched = 0 '
+                '  AND outcome_eligible_after IS NOT NULL '
+                '  AND outcome_eligible_after <= :now '
+                'ORDER BY study_date ASC'
+            ),
+            {'now': now},
+        )
+        return [dict(row) for row in result.mappings().all()]
+
+
+def db_update_study_outcome(snapshot_id: str, outcomes: Dict) -> None:
+    """DB: study persistence — write forward-return outcomes and mark as fetched."""
+    sql = """
+    UPDATE study_snapshots
+    SET outcome_fetched       = 1,
+        fwd_return_5d         = :fwd_return_5d,
+        fwd_return_20d        = :fwd_return_20d,
+        fwd_return_60d        = :fwd_return_60d,
+        fwd_price_5d          = :fwd_price_5d,
+        fwd_price_20d         = :fwd_price_20d,
+        fwd_price_60d         = :fwd_price_60d,
+        outcome_label         = :outcome_label
+    WHERE id = :snapshot_id
+    """
+    with get_db() as conn:
+        conn.execute(text(sql), {**outcomes, 'snapshot_id': snapshot_id})
+
+
+# ---------------------------------------------------------------------------
+# DB: methodology review persistence
+# ---------------------------------------------------------------------------
+
+def db_insert_methodology_review(review: Dict) -> None:
+    """DB: methodology persistence — insert a new methodology review row."""
+    sql = """
+    INSERT INTO methodology_reviews (
+        id, reviewed_at, total_outcomes, analytics_snapshot,
+        proposed_changes, overall_assessment, methodology_version, created_at
+    ) VALUES (
+        :id, :reviewed_at, :total_outcomes, :analytics_snapshot,
+        :proposed_changes, :overall_assessment, :methodology_version, :created_at
+    )
+    """
+    with get_db() as conn:
+        conn.execute(text(sql), review)
+
+
+def db_load_methodology_reviews() -> List[Dict]:
+    """DB: methodology persistence — return all methodology reviews newest-first."""
+    with get_db() as conn:
+        result = conn.execute(
+            text('SELECT * FROM methodology_reviews ORDER BY created_at DESC')
+        )
+        return [dict(row) for row in result.mappings().all()]
+
+
+def db_update_change_status(review_id: str, change_id: str, status: str) -> None:
+    """DB: methodology persistence — update a single proposed change's status by change_id."""
+    with get_db() as conn:
+        row = conn.execute(
+            text('SELECT proposed_changes FROM methodology_reviews WHERE id = :rid'),
+            {'rid': review_id},
+        ).mappings().fetchone()
+        if not row or not row['proposed_changes']:
+            return
+        changes: List[Dict] = json.loads(row['proposed_changes'])
+        for change in changes:
+            if change.get('id') == change_id:
+                change['status'] = status
+                break
+        conn.execute(
+            text('UPDATE methodology_reviews SET proposed_changes = :pc WHERE id = :rid'),
+            {'pc': json.dumps(changes), 'rid': review_id},
+        )
 
 
 # ---------------------------------------------------------------------------
